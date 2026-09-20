@@ -28,6 +28,11 @@ import {
 } from "../adapters/format.ts";
 import { runImport } from "./import-run.ts";
 import { fetchMonster, lookup, type LookupKind } from "./lookup-run.ts";
+import {
+  resolveVault, setVault, listNotes, findNote, searchVault, wikilinks,
+} from "../adapters/vault.ts";
+import { parseStatBlock } from "../engine/import/statblock.ts";
+import { writeFile as writeFileAsync, mkdir as mkdirAsync } from "node:fs/promises";
 import { generateMerchant, shopKinds } from "../engine/generate/merchant.ts";
 import { generateSettlement, settlementSizes } from "../engine/generate/settlement.ts";
 import { generateWilderness, terrainNames, type WildernessOptions } from "../engine/generate/wilderness.ts";
@@ -59,7 +64,7 @@ Encounter setup
 
 Resolution
   attack <attacker> <target> [--weapon NAME | --bonus N --damage EXPR:TYPE]
-         [--distance FEET] [--threatened] [--reaction]
+         [--extra-damage EXPR:TYPE] [--distance FEET] [--threatened] [--reaction]
          [--adv REASON] [--dis REASON] [--cover half|three-quarters|total]
          [--ranged] [--crit-range N] [--times N] [--force]
   cast <caster> <spell> --save ABILITY --damage EXPR:TYPE --target ID...
@@ -80,6 +85,11 @@ Resources
   slots <id> [--use N] [--restore N|all]
   rest short <id> [--hit-dice N]
   rest long [ids...]                 defaults to every player character
+
+Campaign wiki
+  vault status | set <path> | list [folder] | search <text>
+  vault show <note> | links <note>
+  vault import <note> [--as ID] [--dry-run]
 
 SRD reference
   lookup monster|spell|condition <name>
@@ -121,6 +131,7 @@ const options = {
   weapon: { type: "string" as const },
   bonus: { type: "string" as const },
   damage: { type: "string" as const, multiple: true },
+  "extra-damage": { type: "string" as const, multiple: true },
   adv: { type: "string" as const, multiple: true },
   dis: { type: "string" as const, multiple: true },
   cover: { type: "string" as const },
@@ -173,6 +184,7 @@ interface Flags {
   weapon?: string;
   bonus?: string;
   damage?: string[];
+  "extra-damage"?: string[];
   adv?: string[];
   dis?: string[];
   cover?: string;
@@ -447,6 +459,13 @@ const cmdAttack: Handler = async (positionals, flags) => {
     let weaponRange: number | undefined;
     let weaponLongRange: number | undefined;
 
+    if (flags.weapon && (flags.damage ?? []).length > 0) {
+      return err(
+        `--damage cannot be combined with --weapon (it would be unclear whether it replaces or adds). ` +
+          `Use --extra-damage to add a rider on top of the weapon's damage.`,
+      );
+    }
+
     if (flags.weapon) {
       const found = attacker.value.attacks?.find(
         (a) => a.name.toLowerCase() === flags.weapon!.toLowerCase(),
@@ -472,6 +491,14 @@ const cmdAttack: Handler = async (positionals, flags) => {
       }
       bonus = bonusParsed.value;
       damage = damageParsed.value;
+    }
+
+    // Riders the engine deliberately does not apply on its own — a stat block's
+    // "extra damage if the target is prone", say — are added here by the DM.
+    if ((flags["extra-damage"] ?? []).length > 0) {
+      const extra = parseDamageSpecs(flags["extra-damage"]!);
+      if (!extra.ok) return extra;
+      damage = [...damage, ...extra.value];
     }
 
     if (flags["crit-range"]) {
@@ -874,6 +901,136 @@ const cmdImport: Handler = async (positionals, flags) => {
   return ok({ text: result.value.text, json: result.value.json });
 };
 
+const VAULT_USAGE = `usage: dnd vault <command>
+  status                 where the vault is, and what is in it
+  set <path>             point at a vault
+  list [folder]          notes, optionally in one folder
+  search <text>          search every note
+  show <note>            print a note
+  links <note>           wikilinks a note refers to
+  import <note> [--as ID] [--dry-run]   stat block -> data/monsters/`;
+
+const cmdVault: Handler = async (positionals, flags) => {
+  const sub = (positionals[0] ?? "").toLowerCase();
+  const rest = positionals.slice(1);
+
+  if (sub === "set") {
+    const path = rest.join(" ").trim();
+    if (path === "") return err("usage: dnd vault set <path to vault>");
+    const result = await setVault(ROOT, path);
+    if (!result.ok) return result;
+    return ok({ text: `campaign vault set to ${result.value}`, json: { vault: result.value } });
+  }
+
+  const vault = await resolveVault(ROOT);
+  if (!vault.ok) return vault;
+
+  switch (sub) {
+    case "":
+    case "status": {
+      const notes = await listNotes(vault.value);
+      if (!notes.ok) return notes;
+      const byFolder = new Map<string, number>();
+      for (const n of notes.value) {
+        const key = n.folder === "" ? "(root)" : n.folder.split("/")[0]!;
+        byFolder.set(key, (byFolder.get(key) ?? 0) + 1);
+      }
+      const rows = [...byFolder.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([folder, count]) => `  ${String(count).padStart(3)}  ${folder}`);
+      return ok({
+        text: [`${vault.value}`, `${notes.value.length} notes`, ...rows].join("\n"),
+        json: { vault: vault.value, notes: notes.value.length, folders: Object.fromEntries(byFolder) },
+      });
+    }
+
+    case "list": {
+      const notes = await listNotes(vault.value);
+      if (!notes.ok) return notes;
+      const folder = rest.join(" ").trim().toLowerCase();
+      const filtered = folder === ""
+        ? notes.value
+        : notes.value.filter((n) => n.folder.toLowerCase().includes(folder));
+      if (filtered.length === 0) return err(`no notes under "${folder}"`);
+      return ok({
+        text: filtered.map((n) => `  ${n.path}`).join("\n"),
+        json: { notes: filtered },
+      });
+    }
+
+    case "search": {
+      const needle = rest.join(" ").trim();
+      const hits = await searchVault(vault.value, needle);
+      if (!hits.ok) return hits;
+      if (hits.value.length === 0) return err(`nothing in the vault matches "${needle}"`);
+      return ok({
+        text: hits.value.map((h) => `  ${h.note.title}:${h.line}  ${h.text.slice(0, 110)}`).join("\n"),
+        json: { hits: hits.value },
+      });
+    }
+
+    case "show": {
+      const note = await findNote(vault.value, rest.join(" "));
+      if (!note.ok) return note;
+      return ok({ text: note.value.content, json: { ...note.value } });
+    }
+
+    case "links": {
+      const note = await findNote(vault.value, rest.join(" "));
+      if (!note.ok) return note;
+      const links = wikilinks(note.value.content);
+      return ok({
+        text: links.length === 0
+          ? `${note.value.title} links to nothing`
+          : [`${note.value.title} links to:`, ...links.map((l) => `  ${l}`)].join("\n"),
+        json: { note: note.value.title, links },
+      });
+    }
+
+    case "import": {
+      const note = await findNote(vault.value, rest.join(" "));
+      if (!note.ok) return note;
+
+      const parsed = parseStatBlock(note.value.content, note.value.title);
+      if (!parsed.ok) return parsed;
+
+      const combatant = flags.as ? { ...parsed.value.combatant, id: flags.as } : parsed.value.combatant;
+      const lines = [
+        `${combatant.name}  —  AC ${combatant.ac}, ${combatant.hp.max} HP, speed ${combatant.speed}` +
+          (parsed.value.challengeRating !== undefined ? `, CR ${parsed.value.challengeRating}` : ""),
+        `  from ${note.value.path}`,
+      ];
+      for (const a of combatant.attacks ?? []) {
+        const dmg = a.damage.map((d) => `${d.expression} ${d.type}`).join(" + ");
+        lines.push(`  ${a.name}  ${a.bonus >= 0 ? "+" : ""}${a.bonus} to hit  ${dmg}`);
+      }
+      if (parsed.value.warnings.length > 0) {
+        lines.push("");
+        lines.push("  The engine cannot apply these — read them from the note:");
+        for (const w of parsed.value.warnings) lines.push(`    - ${w}`);
+      }
+
+      if (!flags["dry-run"]) {
+        const dir = flags.out ?? join(ROOT, "data", "monsters");
+        const path = join(dir, `${combatant.id}.json`);
+        try {
+          await mkdirAsync(dir, { recursive: true });
+          await writeFileAsync(path, `${JSON.stringify(combatant, null, 2)}\n`, "utf8");
+        } catch (cause) {
+          return err(`could not write ${path}: ${(cause as Error).message}`);
+        }
+        lines.push("");
+        lines.push(`  wrote ${path}`);
+      }
+
+      return ok({ text: lines.join("\n"), json: combatant });
+    }
+
+    default:
+      return err(VAULT_USAGE);
+  }
+};
+
 const cmdLookup: Handler = async (positionals) => {
   const kind = (positionals[0] ?? "").toLowerCase();
   const queryText = positionals.slice(1).join(" ").trim();
@@ -1052,6 +1209,7 @@ const COMMANDS: Record<string, Handler> = {
   rest: cmdRest,
   reaction: cmdReaction,
   gen: cmdGen,
+  vault: cmdVault,
   lookup: cmdLookup,
   fetch: cmdFetch,
   import: cmdImport,

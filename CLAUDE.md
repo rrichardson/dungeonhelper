@@ -54,6 +54,19 @@ Encounter state lives in `encounters/<name>.json` and is plain, readable JSON.
 It is safe to hand-edit between commands when something unusual happens at the
 table; it is re-validated on every load.
 
+## The campaign wiki
+
+An Obsidian vault holds the campaign: the realm, the hook, the plot, NPCs,
+monsters, items and rooms. It is shared — the DM writes in it too — and it is
+the canon. The engine is live mechanical state, not a second source of truth.
+
+    dnd vault status | search <text> | show <note> | import <note>
+
+Read before writing, and never overwrite a note you did not write without
+asking. Stat blocks written in the wiki import into runnable creatures; the
+importer refuses to apply traits, reactions, legendary actions and conditional
+riders, and says so. Relay those warnings rather than quietly hand-waving them.
+
 ## Layout
 
 - `src/engine/` — pure rules. No I/O, no clock, no randomness of its own; every

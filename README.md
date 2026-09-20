@@ -141,6 +141,30 @@ block into `data/monsters/`, deriving proficiency bonus from challenge rating
 `extra_damage_type` when the primary field is empty. Conditional damage riders
 are reported rather than applied, since they depend on how the roll came out.
 
+## Campaign wiki
+
+An Obsidian vault is the campaign's knowledge base, shared between the DM and
+the assistant.
+
+```bash
+node src/cli/index.ts vault set ~/Documents/D&D/My\ Campaign
+node src/cli/index.ts vault search "fissure"
+node src/cli/index.ts vault import "Sporeblight Goose"
+```
+
+`vault import` parses a Markdown stat block into a runnable creature, handling
+both layouts wikis use — `## Armor Class` with the value beneath, and inline
+`**Armor Class** 16`. It reads the first sentence of a `*Hit:*` line as the
+damage of one hit and treats anything after it as a conditional rider to be
+applied by hand, so a "bleed on a critical" never inflates every swing. Traits,
+reactions, legendary and lair actions are reported, not invented.
+
+Writing refuses to overwrite an existing note unless told to: the DM writes in
+this vault too.
+
+The active vault lives in `campaign.json` (git-ignored, since it is an absolute
+path), or `DND_VAULT` in the environment.
+
 ## Generation
 
 ```bash
