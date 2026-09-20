@@ -278,6 +278,9 @@ export function parseCombatant(value: unknown, where: string): Result<Combatant,
     ...(spellSlots.value !== undefined ? { spellSlots: spellSlots.value } : {}),
     ...(hitDice.value !== undefined ? { hitDice: hitDice.value } : {}),
     ...(value["reactionUsed"] === true ? { reactionUsed: true } : {}),
+    ...(typeof value["attacksPerAction"] === "number"
+      ? { attacksPerAction: Math.max(1, Math.trunc(value["attacksPerAction"])) }
+      : {}),
     ...(typeof value["notes"] === "string" ? { notes: value["notes"] } : {}),
   });
 }

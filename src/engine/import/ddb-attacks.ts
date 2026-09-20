@@ -34,6 +34,21 @@ const SPELL_ABILITY: Readonly<Record<number, Ability>> = {
 };
 
 /**
+ * Cantrips whose scaling is not "multiply the damage dice".
+ *
+ * Eldritch Blast adds beams, each its own attack roll. Toll the Dead switches
+ * die size by target state. The blade cantrips scale a rider on a weapon
+ * attack. Each is reported rather than scaled, so nobody gets a confidently
+ * wrong number.
+ */
+const IRREGULAR_CANTRIPS = new Set([
+  "eldritch blast",
+  "toll the dead",
+  "booming blade",
+  "green-flame blade",
+]);
+
+/**
  * Cantrip damage steps up at levels 5, 11 and 17 in both rulesets. The tier is
  * how many dice (or, for Eldritch Blast, how many beams) the cantrip produces.
  */
@@ -373,14 +388,29 @@ export function spellAttacks(
     // adding beams — each its own attack roll — rather than by adding dice,
     // so it cannot be folded into one entry.
     const notes: string[] = [entry.reason];
+    let scaled = primary.dice;
+
     if (level === 0 && tier > 1) {
-      if (name.toLowerCase() === "eldritch blast") {
+      const lowered = name.toLowerCase();
+      if (lowered === "eldritch blast") {
         notes.push(`${tier} beams at level ${ctx.totalLevel} — roll this attack once per beam`);
-      } else {
+      } else if (IRREGULAR_CANTRIPS.has(lowered)) {
         warnings.push(
-          `"${name}" is a cantrip at tier ${tier} (level ${ctx.totalLevel}); its damage scaling was NOT applied automatically — verify the dice`,
+          `"${name}" scales in a way this importer does not model; its damage is the level 1 value — set it by hand`,
         );
         notes.push(`cantrip tier ${tier}: scaling not applied`);
+      } else {
+        // The general rule: a damage cantrip adds a die at 5th, 11th and 17th.
+        const match = /^(\d*)d(\d+)$/.exec(primary.dice);
+        if (match) {
+          const count = (match[1] === "" ? 1 : Number(match[1])) * tier;
+          scaled = `${count}d${match[2]}`;
+          notes.push(`cantrip tier ${tier} at level ${ctx.totalLevel}`);
+        } else {
+          warnings.push(
+            `"${name}" has damage "${primary.dice}" that could not be scaled for tier ${tier} — verify by hand`,
+          );
+        }
       }
     }
     if (level > 0) notes.push(`level ${level} slot`);
@@ -393,7 +423,7 @@ export function spellAttacks(
     out.push({
       name: name.toLowerCase(),
       bonus,
-      damage: [{ expression: withModifier(primary.dice, rider), type: primary.type }],
+      damage: [{ expression: withModifier(scaled, rider), type: primary.type }],
       melee,
       note: notes.join(" · "),
     });

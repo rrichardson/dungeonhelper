@@ -96,6 +96,19 @@
       "note": "known · level 1 slot"
     }
   ],
+  "spellcastingAbility": "cha",
+  "spellSlots": {
+    "3": {
+      "max": 2,
+      "used": 0
+    }
+  },
+  "hitDice": {
+    "size": 8,
+    "max": 5,
+    "used": 0
+  },
+  "attacksPerAction": 2,
   "meta": {
     "ddbId": 167935384,
     "ruleset": "2024",

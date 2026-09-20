@@ -113,6 +113,8 @@ export interface Combatant {
   /** Spell slots by level, 1-9. Absent for creatures that cast none. */
   readonly spellSlots?: Readonly<Record<string, SlotPool>>;
   readonly hitDice?: HitDice;
+  /** Attacks per Attack action: 2 with Extra Attack. Reference data for the DM. */
+  readonly attacksPerAction?: number;
   /** Reactions refresh at the start of the creature's turn. */
   readonly reactionUsed?: boolean;
   readonly notes?: string;

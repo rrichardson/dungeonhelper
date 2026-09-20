@@ -46,6 +46,22 @@ export function formatImportReport(imp: DdbImport): string {
     }
   }
 
+  const resources: string[] = [];
+  if (c.spellSlots) {
+    const pools = Object.entries(c.spellSlots)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([level, pool]) => `L${level} x${pool.max - pool.used}/${pool.max}`);
+    if (pools.length) resources.push(`slots ${pools.join(" ")}`);
+  }
+  if (c.hitDice) resources.push(`hit dice ${c.hitDice.max - c.hitDice.used}/${c.hitDice.max}d${c.hitDice.size}`);
+  if (c.attacksPerAction && c.attacksPerAction > 1) {
+    resources.push(`${c.attacksPerAction} attacks per Attack action`);
+  }
+  if (resources.length) {
+    lines.push("");
+    lines.push(`  ${resources.join(" · ")}`);
+  }
+
   const defenses: string[] = [];
   if (c.resistances.length) defenses.push(`resist ${c.resistances.join(", ")}`);
   if (c.immunities.length) defenses.push(`immune ${c.immunities.join(", ")}`);

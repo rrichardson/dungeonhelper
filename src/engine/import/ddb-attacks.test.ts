@@ -213,21 +213,6 @@ test("spells that need no attack roll are ignored", () => {
   assert.equal(out.length, 0);
 });
 
-test("an unscaled damage cantrip warns rather than guessing its dice", () => {
-  const w: string[] = [];
-  spellAttacks(
-    spellPayload([
-      spell(
-        { name: "Fire Bolt", modifiers: [{ type: "damage", subType: "fire", die: { diceString: "1d10" } }] },
-        { usesSpellSlot: false, countsAsKnownSpell: true },
-      ),
-    ]),
-    { scores: scores(), proficiencyBonus: 3, totalLevel: 11, ability: "cha" },
-    w,
-  );
-  assert.match(w.join(" "), /scaling was NOT applied automatically/);
-});
-
 test("Agonizing Blast adds the spellcasting modifier to each beam", () => {
   const w: string[] = [];
   const data = {
@@ -294,4 +279,126 @@ test("derived attacks all carry usable dice expressions", () => {
       assert.match(d.expression, /^\d*d\d+([+-]\d+)?$/, `${a.name} has odd damage "${d.expression}"`);
     }
   }
+});
+
+// ── Resources ─────────────────────────────────────────────────────────────
+
+import { deriveSpellSlots, deriveHitDice, deriveAttacksPerAction } from "./ddb-resources.ts";
+
+const warlock5 = {
+  classes: [{
+    level: 5,
+    hitDiceUsed: 1,
+    definition: {
+      name: "Warlock",
+      hitDice: 8,
+      spellRules: {
+        levelSpellSlots: [
+          [0,0,0,0,0,0,0,0,0], [1,0,0,0,0,0,0,0,0], [2,0,0,0,0,0,0,0,0],
+          [0,2,0,0,0,0,0,0,0], [0,2,0,0,0,0,0,0,0], [0,0,2,0,0,0,0,0,0],
+        ],
+      },
+    },
+  }],
+  pactMagic: [{ level: 3, used: 1, available: 0 }],
+  spellSlots: [{ level: 1, used: 1, available: 0 }],
+};
+
+test("slot maximums come from the class table, not the zeroed availability field", () => {
+  const w: string[] = [];
+  const slots = deriveSpellSlots(warlock5, w);
+  assert.deepEqual(slots, { "3": { max: 2, used: 1 } });
+});
+
+test("a pact caster's spent slots are read from pactMagic, not spellSlots", () => {
+  const w: string[] = [];
+  const slots = deriveSpellSlots(warlock5, w);
+  assert.equal(slots!["3"]!.used, 1, "pactMagic records the spent slot");
+});
+
+test("a non-caster yields no slots", () => {
+  const w: string[] = [];
+  assert.equal(deriveSpellSlots({ classes: [{ level: 5, definition: { name: "Fighter", hitDice: 10 } }] }, w), undefined);
+});
+
+test("multiclass casting warns rather than silently guessing", () => {
+  const w: string[] = [];
+  deriveSpellSlots({
+    classes: [warlock5.classes[0], { ...warlock5.classes[0], definition: { ...warlock5.classes[0]!.definition, name: "Sorcerer" } }],
+  }, w);
+  assert.match(w.join(" "), /multiclass spellcaster/);
+});
+
+test("hit dice come from class die and level", () => {
+  const w: string[] = [];
+  assert.deepEqual(deriveHitDice(warlock5, w), { size: 8, max: 5, used: 1 });
+});
+
+test("multiclass hit dice merge into one pool and say so", () => {
+  const w: string[] = [];
+  const hd = deriveHitDice({
+    classes: [
+      { level: 3, hitDiceUsed: 0, definition: { name: "Rogue", hitDice: 8 } },
+      { level: 2, hitDiceUsed: 1, definition: { name: "Fighter", hitDice: 10 } },
+    ],
+  }, w);
+  assert.deepEqual(hd, { size: 10, max: 5, used: 1 });
+  assert.match(w.join(" "), /multiclass hit dice/);
+});
+
+test("Thirsting Blade and Extra Attack each grant a second attack", () => {
+  assert.equal(deriveAttacksPerAction({ options: { class: [{ definition: { name: "Thirsting Blade" } }] } }).count, 2);
+  assert.equal(deriveAttacksPerAction({ classes: [{ classFeatures: [{ definition: { name: "Extra Attack" } }] }] }).count, 2);
+  assert.equal(deriveAttacksPerAction({}).count, 1);
+});
+
+test("a scaling damage cantrip gains dice at tier", () => {
+  const w: string[] = [];
+  const out = spellAttacks(
+    spellPayload([
+      spell(
+        { name: "Fire Bolt", modifiers: [{ type: "damage", subType: "fire", die: { diceString: "1d10" } }] },
+        { usesSpellSlot: false, countsAsKnownSpell: true },
+      ),
+    ]),
+    { scores: scores(), proficiencyBonus: 3, totalLevel: 11, ability: "cha" },
+    w,
+  );
+  assert.equal(out[0]!.damage[0]!.expression, "3d10", "tier 3 triples a 1d10 cantrip");
+});
+
+test("an irregular cantrip is left alone and flagged", () => {
+  const w: string[] = [];
+  const out = spellAttacks(
+    spellPayload([
+      spell(
+        { name: "Toll the Dead", modifiers: [{ type: "damage", subType: "necrotic", die: { diceString: "1d8" } }] },
+        { usesSpellSlot: false, countsAsKnownSpell: true },
+      ),
+    ]),
+    { scores: scores(), proficiencyBonus: 3, totalLevel: 11, ability: "cha" },
+    w,
+  );
+  assert.equal(out[0]!.damage[0]!.expression, "1d8");
+  assert.match(w.join(" "), /does not model/);
+});
+
+test("the real warlock imports pact slots, hit dice and a second attack", () => {
+  const result = normalizeDdb(fixture);
+  assert.ok(result.ok);
+  const c = result.value.combatant;
+  assert.deepEqual(c.spellSlots, { "3": { max: 2, used: 0 } });
+  assert.deepEqual(c.hitDice, { size: 8, max: 5, used: 0 });
+  assert.equal(c.attacksPerAction, 2);
+  assert.equal(c.spellcastingAbility, "cha");
+});
+
+test("a conjured pact weapon is reported as needing manual entry", () => {
+  const result = normalizeDdb(fixture);
+  assert.ok(result.ok);
+  assert.match(
+    result.value.warnings.join(" "),
+    /Pact of the Blade conjures a weapon/,
+    "the DM must be told the pact weapon is missing",
+  );
 });

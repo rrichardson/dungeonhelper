@@ -25,7 +25,8 @@ import {
   abilityModifier,
 } from "../types.ts";
 import { type Json, arr, bool, isObject, num, obj, str, unwrapEnvelope } from "./ddb-shape.ts";
-import { deriveAttacks } from "./ddb-attacks.ts";
+import { deriveAttacks, spellcastingAbility } from "./ddb-attacks.ts";
+import { deriveSpellSlots, deriveHitDice, deriveAttacksPerAction, unmodelledAttackFeatures } from "./ddb-resources.ts";
 
 // ─── DDB constants ──────────────────────────────────────────────────────────
 
@@ -643,6 +644,15 @@ export function normalizeDdb(raw: Json): Result<DdbImport, string> {
   const backgroundDef = background ? obj(background, "definition") : undefined;
 
   const attacks = deriveAttacks(data, scores, pb, totalLevel, warnings);
+  const spellSlots = deriveSpellSlots(data, warnings);
+  const hitDice = deriveHitDice(data, warnings);
+  const extraAttacks = deriveAttacksPerAction(data);
+  for (const feature of unmodelledAttackFeatures(data)) {
+    warnings.push(
+      `${feature} conjures a weapon that has no inventory entry — add its attack to the stat block by hand`,
+    );
+  }
+  const castingAbility = spellcastingAbility(data);
   if (attacks.length === 0) {
     warnings.push("no attacks could be derived; add them by hand before running combat");
   }
@@ -667,6 +677,10 @@ export function normalizeDdb(raw: Json): Result<DdbImport, string> {
     stable,
     isPlayer: true,
     attacks,
+    ...(castingAbility !== undefined ? { spellcastingAbility: castingAbility } : {}),
+    ...(spellSlots !== undefined ? { spellSlots } : {}),
+    ...(hitDice !== undefined ? { hitDice } : {}),
+    ...(extraAttacks.count > 1 ? { attacksPerAction: extraAttacks.count } : {}),
   };
 
   const meta: DdbCharacterMeta = {
