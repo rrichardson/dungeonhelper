@@ -25,6 +25,7 @@ import {
   describeDice, formatAttack, formatCheck, formatDeathSave, formatInitiative,
   formatStatus, formatLog,
 } from "../adapters/format.ts";
+import { runImport } from "./import-run.ts";
 import {
   parseDamageSpecs, parseFlatDamage, parseAbility, parseCondition, parseCover,
   parseInteger, parseSuppliedDice,
@@ -63,6 +64,11 @@ Resolution
   exhaustion <target> <level>
   concentrate <target> <spell> | concentrate <target> --off
 
+Characters
+  import <id|url>                    import a character from D&D Beyond
+  import --from <file>               import a saved payload
+         [--out DIR] [--raw FILE] [--dry-run]
+
 Utility
   roll <expr> [--seed S] [--dice 17,4]   a standalone roll
   sheets                                  list available stat blocks
@@ -100,6 +106,10 @@ const options = {
   proficient: { type: "boolean" as const },
   expertise: { type: "boolean" as const },
   limit: { type: "string" as const },
+  from: { type: "string" as const },
+  out: { type: "string" as const },
+  raw: { type: "string" as const },
+  "dry-run": { type: "boolean" as const },
   help: { type: "boolean" as const, short: "h" },
 };
 
@@ -126,6 +136,10 @@ interface Flags {
   proficient?: boolean;
   expertise?: boolean;
   limit?: string;
+  from?: string;
+  out?: string;
+  raw?: string;
+  "dry-run"?: boolean;
   help?: boolean;
 }
 
@@ -596,6 +610,19 @@ const cmdConcentrate: Handler = async (positionals, flags) => {
   });
 };
 
+const cmdImport: Handler = async (positionals, flags) => {
+  const result = await runImport({
+    ref: positionals[0],
+    from: flags.from,
+    outDir: flags.out ?? join(ROOT, "data", "party"),
+    rawPath: flags.raw,
+    json: flags.json,
+    dryRun: flags["dry-run"],
+  });
+  if (!result.ok) return result;
+  return ok({ text: result.value.text, json: result.value.json });
+};
+
 const cmdSheets: Handler = async () => {
   const lines: string[] = [];
   const all: { id: string; path: string }[] = [];
@@ -646,6 +673,7 @@ const COMMANDS: Record<string, Handler> = {
   condition: cmdCondition,
   exhaustion: cmdExhaustion,
   concentrate: cmdConcentrate,
+  import: cmdImport,
   sheets: cmdSheets,
   encounters: cmdEncounters,
 };

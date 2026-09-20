@@ -34,6 +34,18 @@ export function formatImportReport(imp: DdbImport): string {
     );
   }
 
+  if (c.attacks && c.attacks.length > 0) {
+    lines.push("");
+    const width = Math.max(...c.attacks.map((a) => a.name.length));
+    for (const a of c.attacks) {
+      const dmg = a.damage.map((d) => `${d.expression} ${d.type}`).join(" + ");
+      const reach = a.melee === false ? "ranged" : "melee";
+      lines.push(
+        `  ${a.name.padEnd(width)}  ${a.bonus >= 0 ? "+" : ""}${a.bonus} to hit  ${dmg}  (${reach}${a.note ? ` · ${a.note}` : ""})`,
+      );
+    }
+  }
+
   const defenses: string[] = [];
   if (c.resistances.length) defenses.push(`resist ${c.resistances.join(", ")}`);
   if (c.immunities.length) defenses.push(`immune ${c.immunities.join(", ")}`);

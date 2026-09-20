@@ -262,7 +262,7 @@ export function performAttack(
       `(${damage.hpBefore} → ${damage.hpAfter} HP)`,
   );
   for (const note of damage.notes) lines.push(`  ${note}`);
-  if (damage.droppedToZero) lines.push(`  ${target.value.name} falls unconscious at 0 HP`);
+  if (damage.droppedToZero && !damage.died) lines.push(`  ${target.value.name} falls unconscious at 0 HP`);
   if (damage.died) lines.push(`  ${target.value.name} dies`);
 
   // Concentration is checked here, at the boundary, because applyDamage is pure.

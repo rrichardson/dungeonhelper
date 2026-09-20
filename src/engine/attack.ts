@@ -13,7 +13,7 @@ import { parseDice, rollParsed, doubleDice, type DiceResult } from "./dice.ts";
 import { rollD20, type D20Roll, type Modifier } from "./d20.ts";
 import { applyDamage, type DamageOutcome, type DamagePacket } from "./damage.ts";
 import { CONDITIONS, effectiveConditions, exhaustionPenalty, isIncapacitated } from "./conditions.ts";
-import type { Combatant, DamageType } from "./types.ts";
+import { isDefeated, type Combatant, type DamageType } from "./types.ts";
 
 export type Cover = "none" | "half" | "three-quarters" | "total";
 
@@ -126,6 +126,9 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
 
   if (cover === "total") {
     return err(`${req.target.name} has total cover and cannot be targeted`);
+  }
+  if (isDefeated(req.target) && !req.force) {
+    return err(`${req.target.name} is already out of the fight (pass force to override)`);
   }
   if (isIncapacitated(req.attacker) && !req.force) {
     return err(

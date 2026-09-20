@@ -25,6 +25,7 @@ import {
   abilityModifier,
 } from "../types.ts";
 import { type Json, arr, bool, isObject, num, obj, str, unwrapEnvelope } from "./ddb-shape.ts";
+import { deriveAttacks } from "./ddb-attacks.ts";
 
 // ─── DDB constants ──────────────────────────────────────────────────────────
 
@@ -641,6 +642,11 @@ export function normalizeDdb(raw: Json): Result<DdbImport, string> {
   const background = obj(data, "background");
   const backgroundDef = background ? obj(background, "definition") : undefined;
 
+  const attacks = deriveAttacks(data, scores, pb, totalLevel, warnings);
+  if (attacks.length === 0) {
+    warnings.push("no attacks could be derived; add them by hand before running combat");
+  }
+
   const combatant: Combatant = {
     id: slugifyId(name, ddbId),
     name,
@@ -660,6 +666,7 @@ export function normalizeDdb(raw: Json): Result<DdbImport, string> {
     deathSaves,
     stable,
     isPlayer: true,
+    attacks,
   };
 
   const meta: DdbCharacterMeta = {

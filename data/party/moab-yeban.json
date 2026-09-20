@@ -1,0 +1,115 @@
+{
+  "id": "moab-yeban",
+  "name": "Moab Yebàn",
+  "ac": 17,
+  "hp": {
+    "current": 38,
+    "max": 38,
+    "temp": 14
+  },
+  "abilities": {
+    "str": 11,
+    "dex": 17,
+    "con": 15,
+    "int": 13,
+    "wis": 12,
+    "cha": 17
+  },
+  "proficiencyBonus": 3,
+  "saveProficiencies": [
+    "wis",
+    "cha"
+  ],
+  "speed": 40,
+  "resistances": [],
+  "immunities": [],
+  "vulnerabilities": [],
+  "conditionImmunities": [],
+  "conditions": [],
+  "exhaustion": 0,
+  "concentration": null,
+  "deathSaves": {
+    "successes": 0,
+    "failures": 0
+  },
+  "stable": false,
+  "isPlayer": true,
+  "attacks": [
+    {
+      "name": "dagger",
+      "bonus": 6,
+      "damage": [
+        {
+          "expression": "1d4+3",
+          "type": "piercing"
+        }
+      ],
+      "melee": true,
+      "note": "carried · finesse, light, thrown, nick · x2"
+    },
+    {
+      "name": "spear",
+      "bonus": 3,
+      "damage": [
+        {
+          "expression": "1d6",
+          "type": "piercing"
+        }
+      ],
+      "melee": true,
+      "note": "carried · thrown, versatile, sap"
+    },
+    {
+      "name": "spear (two-handed)",
+      "bonus": 3,
+      "damage": [
+        {
+          "expression": "1d8",
+          "type": "piercing"
+        }
+      ],
+      "melee": true,
+      "note": "carried · thrown, versatile, sap · versatile"
+    },
+    {
+      "name": "eldritch blast",
+      "bonus": 6,
+      "damage": [
+        {
+          "expression": "1d10+3",
+          "type": "force"
+        }
+      ],
+      "melee": false,
+      "note": "at-will cantrip · 2 beams at level 5 — roll this attack once per beam · +3 from Agonizing Blast"
+    },
+    {
+      "name": "witch bolt",
+      "bonus": 6,
+      "damage": [
+        {
+          "expression": "2d12",
+          "type": "lightning"
+        }
+      ],
+      "melee": false,
+      "note": "known · level 1 slot"
+    }
+  ],
+  "meta": {
+    "ddbId": 167935384,
+    "ruleset": "2024",
+    "classes": [
+      {
+        "name": "Warlock",
+        "subclass": "Future You Patron",
+        "level": 5
+      }
+    ],
+    "totalLevel": 5,
+    "species": "Human",
+    "background": "Zhentarim Mercenary",
+    "readonlyUrl": "https://dndbeyond.com/characters/167935384",
+    "importedFrom": "dndbeyond"
+  }
+}

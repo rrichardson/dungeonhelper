@@ -1,0 +1,4 @@
+#!/bin/sh
+# Convenience wrapper so the CLI is one word.
+#   ln -s "$PWD/bin/dnd" /usr/local/bin/dnd    — or add bin/ to PATH
+exec node "$(dirname "$(dirname "$(realpath "$0")")")/src/cli/index.ts" "$@"

@@ -5,11 +5,12 @@
   "description": "Deterministic D&D 2024 rules engine + CLI for running adventures as DM.",
   "type": "module",
   "bin": {
-    "dnd": "src/cli/index.ts"
+    "dnd": "bin/dnd"
   },
   "scripts": {
-    "test": "node --test src/**/*.test.ts",
-    "dnd": "node src/cli/index.ts"
+    "test": "node --test 'src/**/*.test.ts'",
+    "dnd": "node src/cli/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "engines": {
     "node": ">=24"

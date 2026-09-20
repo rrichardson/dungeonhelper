@@ -113,6 +113,14 @@ export function isDead(c: Combatant): boolean {
   return c.exhaustion >= 6 || c.deathSaves.failures >= 3;
 }
 
+/**
+ * Out of the fight for good: three death save failures, exhaustion 6, or a
+ * non-player creature at 0 hit points.
+ */
+export function isDefeated(c: Combatant): boolean {
+  return isDead(c) || (c.hp.current <= 0 && !c.isPlayer);
+}
+
 export function hasCondition(c: Combatant, name: ConditionName): boolean {
   return c.conditions.some((a) => a.condition === name);
 }

@@ -11,7 +11,8 @@ import { join, basename, extname } from "node:path";
 import { type Result, ok, err } from "../engine/result.ts";
 import {
   ABILITIES, DAMAGE_TYPES, CONDITION_NAMES,
-  type Ability, type Combatant, type DamageType, type ConditionName, type WeaponAttack,
+  type Ability, type AppliedCondition, type Combatant, type DamageType,
+  type ConditionName, type WeaponAttack,
 } from "../engine/types.ts";
 
 type Obj = Record<string, unknown>;
@@ -119,6 +120,36 @@ function parseAttacks(o: Obj, where: string): Result<WeaponAttack[], string> {
   return ok(out);
 }
 
+/**
+ * Conditions arrive in two shapes: bare names in hand-written stat blocks
+ * ("prone"), and applied objects when state is read back from disk
+ * ({condition, source}). Both are accepted so a sheet round-trips unchanged.
+ */
+function parseConditions(o: Obj, where: string): Result<AppliedCondition[], string> {
+  const raw = o["conditions"];
+  if (raw === undefined) return ok([]);
+  if (!Array.isArray(raw)) return err(`${where}: "conditions" must be an array`);
+
+  const out: AppliedCondition[] = [];
+  for (const [i, item] of raw.entries()) {
+    const at = `${where}: conditions[${i}]`;
+    const name = typeof item === "string" ? item : isObj(item) ? item["condition"] : undefined;
+    if (typeof name !== "string" || !CONDITION_NAMES.includes(name as ConditionName)) {
+      return err(
+        `${at}: expected a condition name or {condition}; allowed names are ${CONDITION_NAMES.join(", ")}`,
+      );
+    }
+    const source = isObj(item) && typeof item["source"] === "string" ? item["source"] : undefined;
+    const note = isObj(item) && typeof item["note"] === "string" ? item["note"] : undefined;
+    out.push({
+      condition: name as ConditionName,
+      ...(source !== undefined ? { source } : {}),
+      ...(note !== undefined ? { note } : {}),
+    });
+  }
+  return ok(out);
+}
+
 /** Parse one stat block. `where` names the file for error messages. */
 export function parseCombatant(value: unknown, where: string): Result<Combatant, string> {
   if (!isObj(value)) return err(`${where}: expected a JSON object`);
@@ -164,7 +195,7 @@ export function parseCombatant(value: unknown, where: string): Result<Combatant,
   if (!vulnerabilities.ok) return vulnerabilities;
   const conditionImmunities = enumList<ConditionName>(value, "conditionImmunities", CONDITION_NAMES, where);
   if (!conditionImmunities.ok) return conditionImmunities;
-  const conditions = enumList<ConditionName>(value, "conditions", CONDITION_NAMES, where);
+  const conditions = parseConditions(value, where);
   if (!conditions.ok) return conditions;
 
   const attacks = parseAttacks(value, where);
@@ -183,7 +214,7 @@ export function parseCombatant(value: unknown, where: string): Result<Combatant,
     immunities: immunities.value,
     vulnerabilities: vulnerabilities.value,
     conditionImmunities: conditionImmunities.value,
-    conditions: conditions.value.map((condition) => ({ condition })),
+    conditions: conditions.value,
     exhaustion: Math.max(0, Math.min(6, exhaustion.value)),
     concentration: null,
     deathSaves: { successes: 0, failures: 0 },

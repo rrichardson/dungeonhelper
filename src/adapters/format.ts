@@ -10,11 +10,12 @@ import type { Combatant } from "../engine/types.ts";
 
 /** "1d6[3] +2 = 5" — every die visible so the arithmetic can be checked. */
 export function describeDice(result: DiceResult): string {
-  const parts = result.terms.map((term) => {
-    const sign = term.sign === 1 ? "" : "-";
+  const parts = result.terms.map((term, i) => {
+    // Leading positive terms carry no sign; every later term shows its operator.
+    const sign = term.sign === 1 ? (i === 0 ? "" : "+") : "-";
     if (term.rolls.length === 0) return `${sign}${Math.abs(term.total)}`;
     const faces = term.rolls
-      .map((r) => (r.kept ? `${r.value}` : `~~${r.value}~~`))
+      .map((r) => (r.kept ? `${r.value}` : `(${r.value})`))
       .join(",");
     return `${sign}${term.notation}[${faces}]`;
   });
@@ -65,7 +66,7 @@ export function formatAttack(report: AttackReport, state: EncounterState): strin
     if (o.damage.tempAbsorbed > 0) lines.push(`  ${o.damage.tempAbsorbed} absorbed by temp HP`);
     lines.push(`  ${targetName}: ${o.damage.hpBefore} → ${o.damage.hpAfter} HP (−${o.damage.adjustedTotal})`);
     for (const note of o.damage.notes) lines.push(`  ! ${note}`);
-    if (o.damage.droppedToZero) lines.push(`  ! ${targetName} drops to 0 and is unconscious`);
+    if (o.damage.droppedToZero && !o.damage.died) lines.push(`  ! ${targetName} drops to 0 and is unconscious`);
     if (o.damage.died) lines.push(`  ! ${targetName} dies`);
   }
 
