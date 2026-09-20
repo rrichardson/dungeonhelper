@@ -1,0 +1,16 @@
+{
+  "id": "brann",
+  "name": "Brann",
+  "isPlayer": true,
+  "ac": 16,
+  "hp": { "max": 27, "current": 27 },
+  "abilities": { "str": 12, "dex": 10, "con": 14, "int": 11, "wis": 17, "cha": 13 },
+  "proficiencyBonus": 3,
+  "saveProficiencies": ["wis", "cha"],
+  "speed": 30,
+  "attacks": [
+    { "name": "mace", "bonus": 4, "damage": [{ "expression": "1d6+1", "type": "bludgeoning" }] },
+    { "name": "sacred flame", "bonus": 6, "melee": false, "damage": [{ "expression": "2d8", "type": "radiant" }] }
+  ],
+  "notes": "Level 5 cleric. Example sheet."
+}

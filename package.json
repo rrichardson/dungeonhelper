@@ -1,0 +1,21 @@
+{
+  "name": "dnd-dm-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic D&D 2024 rules engine + CLI for running adventures as DM.",
+  "type": "module",
+  "bin": {
+    "dnd": "src/cli/index.ts"
+  },
+  "scripts": {
+    "test": "node --test src/**/*.test.ts",
+    "dnd": "node src/cli/index.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}
