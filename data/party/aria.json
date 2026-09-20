@@ -30,7 +30,8 @@
           "expression": "1d8+4",
           "type": "slashing"
         }
-      ]
+      ],
+      "range": 5
     },
     {
       "name": "longbow",
@@ -41,7 +42,9 @@
           "expression": "1d8+2",
           "type": "piercing"
         }
-      ]
+      ],
+      "range": 150,
+      "longRange": 600
     }
   ],
   "notes": "Level 5 fighter. Example sheet.",

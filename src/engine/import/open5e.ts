@@ -124,12 +124,17 @@ function attacksFrom(creature: Json, warnings: string[]): WeaponAttack[] {
         ? `${count}d${size}`
         : `${count}d${size}${bonus > 0 ? "+" : "-"}${Math.abs(bonus)}`;
 
+      const longRange = num(attack, "long_range");
+      const isMelee = range === undefined || range === null;
+
       out.push({
         name: actionName.toLowerCase(),
         bonus: toHit,
         damage: [{ expression, type: typeName as DamageType }],
-        melee: range === undefined || range === null ? true : reach !== undefined && reach !== null,
-        ...(range !== undefined && range !== null ? { note: `range ${range} ft` } : {}),
+        melee: isMelee ? true : reach !== undefined && reach !== null,
+        ...(isMelee ? { range: reach ?? 5 } : { range }),
+        ...(longRange !== undefined && longRange !== null ? { longRange } : {}),
+        ...(!isMelee ? { note: `range ${range}/${longRange ?? range} ft` } : {}),
       });
     }
   }

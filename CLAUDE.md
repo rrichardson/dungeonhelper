@@ -19,6 +19,18 @@ the DM wants to adjudicate it. Do not fill the gap with mental arithmetic and
 do not quietly approximate. An honest "the engine does not model this yet" is
 always better than a confident number nobody can verify.
 
+## Who holds what
+
+The DM tracks positions in space and decides when attacks, spells and
+reactions occur. This engine performs the calculation when they do. It has no
+model of the battlefield and must never invent one: distances, adjacency,
+cover and line of sight are facts the DM supplies, passed in as `--distance`,
+`--threatened`, `--cover` and explicit `--adv` / `--dis` reasons.
+
+When a spatial fact would change the result and the DM has not stated it, ask
+for it. Never substitute a guess, and never let a weapon's default stand in
+for a distance the DM actually knows.
+
 ## How to run it
 
     ./bin/dnd <command>                   # or: node src/cli/index.ts <command>

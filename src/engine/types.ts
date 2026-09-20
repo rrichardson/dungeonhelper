@@ -80,8 +80,11 @@ export interface WeaponAttack {
   readonly name: string;
   readonly bonus: number;
   readonly damage: readonly { readonly expression: string; readonly type: DamageType }[];
-  /** Melee attacks default to being within 5 feet. */
   readonly melee?: boolean;
+  /** Melee reach, or a ranged weapon's normal range, in feet. */
+  readonly range?: number;
+  /** A ranged weapon's long range, in feet. Beyond it the shot is impossible. */
+  readonly longRange?: number;
   readonly critRange?: number;
   readonly note?: string;
 }

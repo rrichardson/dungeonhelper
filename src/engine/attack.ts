@@ -37,8 +37,19 @@ export interface AttackRequest {
   /** Total to-hit bonus: ability modifier + proficiency + magic. */
   readonly attackBonus: number;
   readonly damage: readonly DamageSpec[];
-  /** Melee reach or adjacency — governs prone and the auto-crit rules. */
+  /**
+   * True for a melee attack, false for a ranged one. Used as the adjacency
+   * fallback when no `distance` is given, and always used to decide whether
+   * the "ranged attack while threatened" penalty applies.
+   */
   readonly within5: boolean;
+  /** Distance to the target in feet, when the DM is tracking positions. */
+  readonly distance?: number;
+  /** Melee reach, or a ranged weapon's normal range. */
+  readonly range?: number;
+  readonly longRange?: number;
+  /** A hostile creature is within 5 feet of the attacker. */
+  readonly threatened?: boolean;
   readonly cover?: Cover;
   /** Lowest natural roll that crits; 20 unless a feature lowers it. */
   readonly critRange?: number;
@@ -144,14 +155,53 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
     parsedDamage.push({ spec, parsed: parsed.value });
   }
 
+  // Distance, when given, decides adjacency — a bow fired from three feet is
+  // still an attack from within 5 feet, and prone and auto-crit both care
+  // about that rather than about what the attacker is holding.
+  const within5 = req.distance !== undefined ? req.distance <= 5 : req.within5;
+
+  const rangeNotes: string[] = [];
+  const rangeDisadvantage: string[] = [];
+
+  if (req.distance !== undefined) {
+    const melee = req.within5 || req.range === undefined || req.longRange === undefined;
+    if (melee) {
+      const reach = req.range ?? 5;
+      if (req.distance > reach && !req.force) {
+        return err(
+          `${req.target.name} is ${req.distance} ft away, beyond ${req.weapon}'s ${reach} ft reach`,
+        );
+      }
+    } else {
+      const normal = req.range!;
+      const long = req.longRange!;
+      if (req.distance > long && !req.force) {
+        return err(
+          `${req.target.name} is ${req.distance} ft away, beyond ${req.weapon}'s long range of ${long} ft`,
+        );
+      }
+      if (req.distance > normal) {
+        rangeDisadvantage.push(`long range (${req.distance} ft, normal ${normal} ft)`);
+      }
+    }
+    rangeNotes.push(`distance ${req.distance} ft`);
+  }
+
+  // A ranged attack made with a hostile creature within 5 feet has
+  // disadvantage. This turns on the kind of attack, not the distance to the
+  // target: a bow fired point blank is still a ranged attack.
+  if (req.threatened === true && !req.within5) {
+    rangeDisadvantage.push("ranged attack with a hostile within 5 ft");
+  }
+
   const derived = attackAdvantage(
     req.attacker,
     req.target,
-    req.within5,
+    within5,
     req.fearSourceVisible ?? true,
   );
   const advantage = [...derived.advantage, ...(req.advantage ?? [])];
-  const disadvantage = [...derived.disadvantage, ...(req.disadvantage ?? [])];
+  const disadvantage = [...derived.disadvantage, ...rangeDisadvantage, ...(req.disadvantage ?? [])];
 
   const modifiers: Modifier[] = [{ source: "attack bonus", value: req.attackBonus }];
   const exhaustion = exhaustionPenalty(req.attacker.exhaustion);
@@ -163,12 +213,13 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
 
   const effectiveAc = req.target.ac + COVER_AC[cover];
   if (cover !== "none") notes.push(`${cover} cover: AC ${req.target.ac} → ${effectiveAc}`);
+  for (const note of rangeNotes) notes.push(note);
 
   // A natural 20 always hits and always crits; a natural 1 always misses.
   const automatic = roll.natural20 ? "hit" : roll.natural1 ? "miss" : null;
   const hit = roll.natural20 ? true : roll.natural1 ? false : roll.total >= effectiveAc;
 
-  const auto = hit ? autoCritApplies(req.target, req.within5) : null;
+  const auto = hit ? autoCritApplies(req.target, within5) : null;
   const inCritRange = roll.used >= critRange;
   const critical = hit && (inCritRange || auto !== null);
   const criticalReason = !critical

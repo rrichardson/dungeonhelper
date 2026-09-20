@@ -33,6 +33,38 @@ Run from the repo root:
     dnd attack aria ogre --weapon longbow --dis "long range"
     dnd attack aria ogre --weapon longsword --adv "flanking" --cover half
 
+### Positions are the DM's, not yours
+
+The DM tracks where everyone stands and decides when attacks, spells and
+reactions happen. You never infer, estimate or assume a distance. Pass what
+the DM states:
+
+    dnd attack aria ogre --weapon longbow --distance 60
+    dnd attack aria ogre --weapon longbow --distance 60 --threatened
+    dnd attack aria ogre --weapon longsword --distance 5 --reaction
+
+`--distance` (in feet) drives several rules at once, so supplying it is worth
+the keystrokes:
+
+- within 5 feet counts as adjacent, whatever the weapon — a bow fired point
+  blank at a prone target still gets advantage, and still auto-crits an
+  unconscious one
+- beyond a weapon's normal range gives disadvantage; beyond its long range the
+  attack is refused
+- a melee attack past its reach is refused
+
+`--threatened` adds the disadvantage for making a *ranged* attack with a
+hostile within 5 feet of the attacker. It never penalises a melee attack.
+
+`--reaction` spends the attacker's reaction, for an opportunity attack. The
+reaction is spent before any dice are rolled, and refreshes at the start of
+that creature's own turn.
+
+**If a distance would change the result and the DM has not given one, ask.**
+That is the case whenever the target is prone, unconscious or paralyzed, or
+whenever the attack is ranged. Do not guess a number, and do not quietly fall
+back to the weapon's default.
+
 `--weapon` reads the attack off the stat block. Otherwise give `--bonus` and
 one or more `--damage EXPR:TYPE`. Add `--crit-range 19` for an expanded crit
 range, `--ranged` to force a non-melee attack, `--force` to override a refusal.

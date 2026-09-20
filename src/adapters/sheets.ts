@@ -113,6 +113,8 @@ function parseAttacks(o: Obj, where: string): Result<WeaponAttack[], string> {
       bonus: bonus.value,
       damage,
       melee: item["melee"] === undefined ? true : item["melee"] === true,
+      ...(typeof item["range"] === "number" ? { range: item["range"] } : {}),
+      ...(typeof item["longRange"] === "number" ? { longRange: item["longRange"] } : {}),
       ...(typeof item["critRange"] === "number" ? { critRange: item["critRange"] } : {}),
       ...(typeof item["note"] === "string" ? { note: item["note"] } : {}),
     });

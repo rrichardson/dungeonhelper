@@ -184,11 +184,18 @@ export function weaponAttacks(
       ...(properties.length > 0 ? [properties.join(", ")] : []),
     ].join(" · ");
 
+    const reachOrRange = num(definition, "range");
+    const longRange = num(definition, "longRange");
+
     out.push({
       name: name.toLowerCase(),
       bonus,
       damage: [{ expression: withModifier(dice, abilityMod + magic), type }],
       melee,
+      // A melee weapon's "range" is its reach; a thrown or ranged weapon's is
+      // its normal range, with longRange beyond it.
+      ...(reachOrRange !== undefined ? { range: reachOrRange } : melee ? { range: 5 } : {}),
+      ...(longRange !== undefined ? { longRange } : {}),
       note,
     });
 

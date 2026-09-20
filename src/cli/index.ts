@@ -59,6 +59,7 @@ Encounter setup
 
 Resolution
   attack <attacker> <target> [--weapon NAME | --bonus N --damage EXPR:TYPE]
+         [--distance FEET] [--threatened] [--reaction]
          [--adv REASON] [--dis REASON] [--cover half|three-quarters|total]
          [--ranged] [--crit-range N] [--times N] [--force]
   cast <caster> <spell> --save ABILITY --damage EXPR:TYPE --target ID...
@@ -154,6 +155,9 @@ const options = {
   shops: { type: "string" as const },
   lines: { type: "string" as const },
   scale: { type: "string" as const },
+  distance: { type: "string" as const },
+  threatened: { type: "boolean" as const },
+  reaction: { type: "boolean" as const },
   help: { type: "boolean" as const, short: "h" },
 };
 
@@ -203,6 +207,9 @@ interface Flags {
   shops?: string;
   lines?: string;
   scale?: string;
+  distance?: string;
+  threatened?: boolean;
+  reaction?: boolean;
   help?: boolean;
 }
 
@@ -437,6 +444,8 @@ const cmdAttack: Handler = async (positionals, flags) => {
     let damage;
     let melee = !flags.ranged;
     let critRange = 20;
+    let weaponRange: number | undefined;
+    let weaponLongRange: number | undefined;
 
     if (flags.weapon) {
       const found = attacker.value.attacks?.find(
@@ -451,6 +460,8 @@ const cmdAttack: Handler = async (positionals, flags) => {
       damage = found.damage;
       melee = found.melee !== false && !flags.ranged;
       critRange = found.critRange ?? 20;
+      weaponRange = found.range;
+      weaponLongRange = found.longRange;
     } else {
       const bonusParsed = parseInteger(flags.bonus, "--bonus (or use --weapon)");
       if (!bonusParsed.ok) return bonusParsed;
@@ -475,11 +486,24 @@ const cmdAttack: Handler = async (positionals, flags) => {
     const timesParsed = parseInteger(flags.times ?? "1", "--times");
     if (!timesParsed.ok) return timesParsed;
 
+    let distance: number | undefined;
+    if (flags.distance !== undefined) {
+      const parsed = parseInteger(flags.distance, "--distance");
+      if (!parsed.ok) return parsed;
+      if (parsed.value < 0) return err("--distance cannot be negative");
+      distance = parsed.value;
+    }
+
     const result = performAttacks(state, {
       attackerId, targetId, weapon,
       attackBonus: bonus,
       damage,
       within5: melee,
+      ...(distance !== undefined ? { distance } : {}),
+      ...(weaponRange !== undefined ? { range: weaponRange } : {}),
+      ...(weaponLongRange !== undefined ? { longRange: weaponLongRange } : {}),
+      ...(flags.threatened ? { threatened: true } : {}),
+      ...(flags.reaction ? { reaction: true } : {}),
       cover: cover.value,
       critRange,
       advantage: flags.adv ?? [],

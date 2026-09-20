@@ -205,6 +205,13 @@ export interface AttackParams {
   readonly attackBonus: number;
   readonly damage: AttackRequest["damage"];
   readonly within5?: boolean;
+  /** Distance in feet; when given it decides adjacency and range effects. */
+  readonly distance?: number;
+  readonly range?: number;
+  readonly longRange?: number;
+  readonly threatened?: boolean;
+  /** Spend the attacker's reaction, for an opportunity attack. */
+  readonly reaction?: boolean;
   readonly cover?: AttackRequest["cover"];
   readonly critRange?: number;
   readonly advantage?: readonly string[];
@@ -229,7 +236,16 @@ export function performAttack(
   const target = getCombatant(state, params.targetId);
   if (!target.ok) return target;
 
-  const { rng, seed, rollCount } = nextRng(state);
+  // An opportunity attack costs the reaction before any dice are rolled, so a
+  // creature that has none never gets a free swing.
+  let working0 = state;
+  if (params.reaction === true) {
+    const spent = useReaction(working0, params.attackerId);
+    if (!spent.ok) return spent;
+    working0 = spent.value.state;
+  }
+
+  const { rng, seed, rollCount } = nextRng(working0);
   const resolved = resolveAttack(
     {
       attacker: attacker.value,
@@ -238,6 +254,10 @@ export function performAttack(
       attackBonus: params.attackBonus,
       damage: params.damage,
       within5: params.within5 ?? true,
+      ...(params.distance !== undefined ? { distance: params.distance } : {}),
+      ...(params.range !== undefined ? { range: params.range } : {}),
+      ...(params.longRange !== undefined ? { longRange: params.longRange } : {}),
+      ...(params.threatened !== undefined ? { threatened: params.threatened } : {}),
       cover: params.cover,
       critRange: params.critRange,
       advantage: params.advantage,
@@ -249,7 +269,7 @@ export function performAttack(
   if (!resolved.ok) return resolved;
 
   const outcome = resolved.value;
-  let working: EncounterState = { ...state, rollCount };
+  let working: EncounterState = { ...working0, rollCount };
   const lines: string[] = [];
 
   if (!outcome.hit) {

@@ -216,3 +216,101 @@ test("resolution never mutates the input combatants", () => {
   run({ target }, 18, 5);
   assert.equal(target.hp.current, 40);
 });
+
+// ── Distance-driven rules ─────────────────────────────────────────────────
+
+const bow = {
+  weapon: "shortbow", attackBonus: 4, within5: false,
+  damage: [{ expression: "1d6+2", type: "piercing" as const }],
+  range: 80, longRange: 320,
+};
+
+test("a bow fired from within 5 feet at a prone target gains advantage", () => {
+  // Prone turns on the attacker's distance, not on what they are holding.
+  const prone = make("fighter", { conditions: [{ condition: "prone" }] });
+  const o = run({ ...bow, target: prone, distance: 3 }, 8, 17, 3);
+  assert.equal(o.roll.resolution.state, "advantage");
+  assert.ok(o.roll.resolution.advantage.includes("target prone"));
+});
+
+test("the same bow at 60 feet takes disadvantage against a prone target", () => {
+  const prone = make("fighter", { conditions: [{ condition: "prone" }] });
+  const o = run({ ...bow, target: prone, distance: 60 }, 17, 8, 3);
+  assert.equal(o.roll.resolution.state, "disadvantage");
+});
+
+test("a ranged hit from within 5 feet on an unconscious target still auto-crits", () => {
+  const out = make("fighter", { conditions: [{ condition: "unconscious" }] });
+  const o = run({ ...bow, target: out, distance: 5 }, 12, 12, 4, 5);
+  assert.equal(o.critical, true);
+  assert.equal(o.criticalReason, "target unconscious within 5 ft");
+});
+
+test("beyond normal range gives disadvantage, and says why", () => {
+  const o = run({ ...bow, distance: 150 }, 17, 8, 3);
+  assert.equal(o.roll.resolution.state, "disadvantage");
+  assert.match(o.roll.resolution.disadvantage.join(" "), /long range \(150 ft, normal 80 ft\)/);
+});
+
+test("within normal range there is no range penalty", () => {
+  const o = run({ ...bow, distance: 80 }, 14, 3);
+  assert.equal(o.roll.resolution.state, "normal");
+});
+
+test("beyond long range the shot is refused", () => {
+  const r = resolveAttack(attack({ ...bow, distance: 400 }), makeFixedRng([17, 3]));
+  assert.equal(r.ok, false);
+  assert.match(r.ok ? "" : r.error, /beyond shortbow's long range of 320 ft/);
+});
+
+test("a melee attack beyond reach is refused", () => {
+  const r = resolveAttack(
+    attack({ weapon: "longsword", within5: true, range: 5, distance: 15 }),
+    makeFixedRng([17, 3]),
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.ok ? "" : r.error, /beyond longsword's 5 ft reach/);
+});
+
+test("a reach weapon may strike at 10 feet", () => {
+  const o = run({ weapon: "glaive", within5: true, range: 10, distance: 10, attackBonus: 5 }, 14, 3);
+  assert.equal(o.hit, true);
+});
+
+test("force overrides a range refusal", () => {
+  const r = resolveAttack(attack({ ...bow, distance: 400, force: true }), makeFixedRng([17, 3]));
+  assert.equal(r.ok, true);
+});
+
+test("a ranged attack with a hostile adjacent takes disadvantage", () => {
+  const o = run({ ...bow, distance: 60, threatened: true }, 17, 8, 3);
+  assert.equal(o.roll.resolution.state, "disadvantage");
+  assert.match(o.roll.resolution.disadvantage.join(" "), /hostile within 5 ft/);
+});
+
+test("being threatened does not penalise a melee attack", () => {
+  const o = run({ weapon: "longsword", within5: true, distance: 5, range: 5, threatened: true }, 14, 3);
+  assert.equal(o.roll.resolution.state, "normal");
+});
+
+test("adjacency advantage and a threatened shot cancel to a flat roll", () => {
+  // Point blank at a prone target while an enemy is adjacent: advantage from
+  // prone, disadvantage for shooting while threatened.
+  const prone = make("fighter", { conditions: [{ condition: "prone" }] });
+  const o = run({ ...bow, target: prone, distance: 5, threatened: true }, 11, 3);
+  assert.equal(o.roll.dice.length, 1);
+  assert.equal(o.roll.resolution.cancelled, true);
+});
+
+test("distance is recorded on the outcome for the log", () => {
+  const o = run({ ...bow, distance: 45 }, 14, 3);
+  assert.ok(o.notes.some((n) => n.includes("distance 45 ft")));
+});
+
+test("without a distance the weapon's own kind decides adjacency, as before", () => {
+  const prone = make("fighter", { conditions: [{ condition: "prone" }] });
+  const melee = run({ weapon: "longsword", within5: true, target: prone }, 8, 17, 3);
+  assert.equal(melee.roll.resolution.state, "advantage");
+  const ranged = run({ ...bow, target: prone }, 17, 8, 3);
+  assert.equal(ranged.roll.resolution.state, "disadvantage");
+});
