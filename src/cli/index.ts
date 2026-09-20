@@ -27,6 +27,7 @@ import {
   formatStatus, formatLog,
 } from "../adapters/format.ts";
 import { runImport } from "./import-run.ts";
+import { fetchMonster, lookup, type LookupKind } from "./lookup-run.ts";
 import { generateMerchant, shopKinds } from "../engine/generate/merchant.ts";
 import { generateSettlement, settlementSizes } from "../engine/generate/settlement.ts";
 import { generateWilderness, terrainNames, type WildernessOptions } from "../engine/generate/wilderness.ts";
@@ -78,6 +79,10 @@ Resources
   slots <id> [--use N] [--restore N|all]
   rest short <id> [--hit-dice N]
   rest long [ids...]                 defaults to every player character
+
+SRD reference
+  lookup monster|spell|condition <name>
+  fetch <monster name> [--as ID] [--dry-run]   write a stat block to data/monsters
 
 Characters
   import <id|url>                    import a character from D&D Beyond
@@ -845,6 +850,61 @@ const cmdImport: Handler = async (positionals, flags) => {
   return ok({ text: result.value.text, json: result.value.json });
 };
 
+const cmdLookup: Handler = async (positionals) => {
+  const kind = (positionals[0] ?? "").toLowerCase();
+  const queryText = positionals.slice(1).join(" ").trim();
+  const kinds: LookupKind[] = ["monster", "spell", "condition"];
+
+  if (!kinds.includes(kind as LookupKind) || queryText === "") {
+    return err(`usage: dnd lookup <${kinds.join("|")}> <name>`);
+  }
+
+  const result = await lookup(kind as LookupKind, queryText);
+  if (!result.ok) return result;
+  return ok({
+    text: [`${kind} — "${queryText}"`, ...result.value.rows].join("\n"),
+    json: { kind, results: result.value.raw },
+  });
+};
+
+const cmdFetch: Handler = async (positionals, flags) => {
+  const name = positionals.join(" ").trim();
+  if (name === "") return err(`usage: dnd fetch <monster name> [--as ID] [--dry-run]`);
+
+  const result = await fetchMonster({
+    name,
+    outDir: flags.out ?? join(ROOT, "data", "monsters"),
+    ...(flags.as !== undefined ? { as: flags.as } : {}),
+    ...(flags["dry-run"] ? { dryRun: true } : {}),
+  });
+  if (!result.ok) return result;
+
+  const { imported, writtenTo } = result.value;
+  const c = imported.combatant;
+  const lines = [
+    `${c.name}  —  CR ${imported.challengeRating}, AC ${c.ac}, ${c.hp.max} HP, speed ${c.speed}`,
+    `  ${imported.source}`,
+  ];
+  if (c.attacks && c.attacks.length > 0) {
+    const width = Math.max(...c.attacks.map((a) => a.name.length));
+    for (const a of c.attacks) {
+      const dmg = a.damage.map((d) => `${d.expression} ${d.type}`).join(" + ");
+      lines.push(`  ${a.name.padEnd(width)}  ${a.bonus >= 0 ? "+" : ""}${a.bonus} to hit  ${dmg}`);
+    }
+  }
+  if (imported.warnings.length > 0) {
+    lines.push("");
+    lines.push("  Check these against the stat block:");
+    for (const w of imported.warnings) lines.push(`    - ${w}`);
+  }
+  if (writtenTo !== null) {
+    lines.push("");
+    lines.push(`  wrote ${writtenTo}`);
+  }
+
+  return ok({ text: lines.join("\n"), json: { ...c, writtenTo } });
+};
+
 const cmdGen: Handler = async (positionals, flags) => {
   const what = (positionals[0] ?? "").toLowerCase();
   const seed = flags.seed ?? randomUUID().slice(0, 8);
@@ -968,6 +1028,8 @@ const COMMANDS: Record<string, Handler> = {
   rest: cmdRest,
   reaction: cmdReaction,
   gen: cmdGen,
+  lookup: cmdLookup,
+  fetch: cmdFetch,
   import: cmdImport,
   sheets: cmdSheets,
   encounters: cmdEncounters,

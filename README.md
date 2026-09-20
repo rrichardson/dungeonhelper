@@ -128,6 +128,30 @@ Optional: `isPlayer`, `saveProficiencies`, `resistances`, `immunities`,
 `vulnerabilities`, `conditionImmunities`, `conditions`, `exhaustion`, `notes`.
 Validation names the exact field at fault.
 
+## SRD lookup
+
+```bash
+node src/cli/index.ts lookup monster "owlbear"
+node src/cli/index.ts fetch "Goblin Warrior"
+```
+
+`fetch` pulls a creature from the Open5e 2024 SRD and writes a runnable stat
+block into `data/monsters/`, deriving proficiency bonus from challenge rating
+(the API leaves it null) and reading an attack's damage type from
+`extra_damage_type` when the primary field is empty. Conditional damage riders
+are reported rather than applied, since they depend on how the roll came out.
+
+## Generation
+
+```bash
+node src/cli/index.ts gen merchant --kind smithy
+node src/cli/index.ts gen town --size village
+node src/cli/index.ts gen wilderness --width 10 --height 6 --terrain forest
+```
+
+Seeded like everything else, so a location reproduces exactly from its seed
+and stays stable once the party has visited it.
+
 ## Tests
 
 ```bash

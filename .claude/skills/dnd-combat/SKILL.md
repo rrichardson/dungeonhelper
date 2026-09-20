@@ -156,6 +156,23 @@ Do not re-derive these by hand — they are applied automatically:
 - exhaustion as −2 per level on all d20 tests and −5 ft speed per level
 - unconscious implying both prone and incapacitated
 
+## SRD reference and monsters
+
+    dnd lookup monster "owlbear"       # search the 2024 SRD
+    dnd lookup spell "fireball"
+    dnd lookup condition grappled
+    dnd fetch "Goblin Warrior"         # write a stat block to data/monsters/
+    dnd fetch "Owlbear" --as owlbear --dry-run
+
+`fetch` converts an SRD creature into a runnable stat block with attacks, so
+monsters need not be hand-written. Read its warnings: conditional damage
+riders ("plus 1d4 if the attack had Advantage") are deliberately NOT applied
+automatically, because they depend on how the roll came out. Apply them with
+an explicit `--damage` when the condition is met.
+
+Note the 2024 SRD renames many creatures — the goblin is "Goblin Warrior".
+Search first if a name is not found.
+
 ## Generating content
 
     dnd gen merchant --kind smithy       # shop, proprietor, priced stock
