@@ -4,6 +4,7 @@ import {
   createEncounter, addCombatant, removeCombatant, rollInitiativeFor, startEncounter,
   nextTurn, currentTurn, performAttack, damageCombatant, healCombatant, setCondition,
   setExhaustion, performDeathSave, setConcentration, status, getCombatant,
+  castSpell, performAttacks, useReaction, useSlot, restLong,
 } from "./encounter.ts";
 import type { Combatant } from "./types.ts";
 import type { EncounterState } from "./encounter.ts";
@@ -215,4 +216,159 @@ test("state transitions never mutate the previous state", () => {
   damageCombatant(s, "fighter", [{ amount: 10, type: "fire" }]);
   setCondition(s, "fighter", "prone", true);
   assert.equal(JSON.stringify(s), before);
+});
+
+
+// ── Spells, resources and reactions ───────────────────────────────────────
+
+function withCaster(): EncounterState {
+  let state = createEncounter("Casting", "cast-seed");
+  state = unwrap(addCombatant(state, make("brann", {
+    isPlayer: true,
+    spellcastingAbility: "wis",
+    spellSlots: { "3": { max: 2, used: 0 } },
+    hitDice: { size: 8, max: 5, used: 0 },
+  })));
+  state = unwrap(addCombatant(state, make("goblin-1", { hp: { current: 7, max: 7, temp: 0 } })));
+  state = unwrap(addCombatant(state, make("goblin-2", { hp: { current: 7, max: 7, temp: 0 } })));
+  return state;
+}
+
+const fireball = {
+  name: "Fireball", dc: 15, ability: "dex" as const,
+  damage: [{ expression: "8d6", type: "fire" as const }],
+  onSuccess: "half" as const,
+  targetIds: ["goblin-1", "goblin-2"],
+};
+
+test("casting applies damage to every target and spends the slot", () => {
+  const r = unwrap(castSpell(withCaster(), { casterId: "brann", ...fireball, slotLevel: 3 }));
+  assert.equal(r.report.slotSpent, 3);
+  assert.equal(r.state.combatants["brann"]!.spellSlots!["3"]!.used, 1);
+  assert.equal(r.report.outcome.targets.length, 2);
+  for (const t of r.report.outcome.targets) {
+    assert.ok(t.damage !== null);
+  }
+});
+
+test("every target of one casting takes the same rolled damage", () => {
+  const r = unwrap(castSpell(withCaster(), { casterId: "brann", ...fireball }));
+  const totals = r.report.outcome.targets.map((t) =>
+    t.halved ? t.damage!.adjustedTotal * 2 : t.damage!.adjustedTotal,
+  );
+  // Halved targets double back to the shared roll; both must agree with it.
+  for (const total of totals) {
+    assert.ok(
+      Math.abs(total - r.report.outcome.baseTotal) <= 1,
+      `target total ${total} should track the shared roll ${r.report.outcome.baseTotal}`,
+    );
+  }
+});
+
+test("a caster without the slot never rolls the spell", () => {
+  const state = withCaster();
+  const drained = {
+    ...state,
+    combatants: {
+      ...state.combatants,
+      brann: { ...state.combatants["brann"]!, spellSlots: { "3": { max: 2, used: 2 } } },
+    },
+  };
+  const before = drained.rollCount;
+  const r = castSpell(drained, { casterId: "brann", ...fireball, slotLevel: 3 });
+  assert.equal(r.ok, false);
+  assert.equal(drained.rollCount, before, "a refused cast must consume no dice");
+});
+
+test("casting can start concentration on the spell", () => {
+  const r = unwrap(castSpell(withCaster(), {
+    casterId: "brann", ...fireball, name: "Spirit Guardians", concentrate: true,
+  }));
+  assert.equal(r.state.combatants["brann"]!.concentration?.spell, "Spirit Guardians");
+});
+
+test("an unknown target refuses the whole casting", () => {
+  const r = castSpell(withCaster(), {
+    casterId: "brann", ...fireball, targetIds: ["goblin-1", "ghost"],
+  });
+  assert.equal(r.ok, false);
+});
+
+test("multiattack resolves each swing as a separate roll", () => {
+  let state = createEncounter("Multi", "multi-seed");
+  state = unwrap(addCombatant(state, make("ogre", { attacks: [] })));
+  state = unwrap(addCombatant(state, make("aria", { isPlayer: true, hp: { current: 200, max: 200, temp: 0 } })));
+
+  const r = unwrap(performAttacks(state, {
+    attackerId: "ogre", targetId: "aria", weapon: "greatclub",
+    attackBonus: 6, damage: [{ expression: "2d8+4", type: "bludgeoning" as const }],
+  }, 3));
+
+  assert.equal(r.reports.length, 3);
+  const seeds = new Set(r.reports.map((x) => x.seed));
+  assert.equal(seeds.size, 3, "each swing must use its own seed");
+});
+
+test("multiattack stops once the target is out of the fight", () => {
+  let state = createEncounter("Multi", "multi-stop");
+  state = unwrap(addCombatant(state, make("ogre")));
+  state = unwrap(addCombatant(state, make("goblin", { hp: { current: 1, max: 1, temp: 0 } })));
+
+  const r = unwrap(performAttacks(state, {
+    attackerId: "ogre", targetId: "goblin", weapon: "greatclub",
+    attackBonus: 20, damage: [{ expression: "2d8+4", type: "bludgeoning" as const }],
+  }, 5));
+
+  assert.ok(r.reports.length < 5, "swings should stop when the goblin dies");
+  assert.ok(r.reports.length >= 1);
+});
+
+test("a reaction can be used once and then refuses", () => {
+  const state = withCaster();
+  const first = unwrap(useReaction(state, "brann"));
+  assert.equal(first.state.combatants["brann"]!.reactionUsed, true);
+  assert.equal(useReaction(first.state, "brann").ok, false);
+});
+
+test("a reaction refreshes at the start of that creature's own turn", () => {
+  let state = withCaster();
+  state = unwrap(rollInitiativeFor(state, ["brann", "goblin-1", "goblin-2"])).state;
+  state = unwrap(startEncounter(state));
+  state = unwrap(useReaction(state, "brann")).state;
+  assert.equal(state.combatants["brann"]!.reactionUsed, true);
+
+  // Advance until Brann's turn comes round again.
+  for (let i = 0; i < state.order.length; i++) {
+    state = unwrap(nextTurn(state)).state;
+    if (currentTurn(state)!.id === "brann") break;
+  }
+  assert.equal(currentTurn(state)!.id, "brann");
+  assert.equal(state.combatants["brann"]!.reactionUsed, false, "reaction returns on your own turn");
+});
+
+test("another creature's turn does not refresh your reaction", () => {
+  let state = withCaster();
+  state = unwrap(rollInitiativeFor(state, ["brann", "goblin-1", "goblin-2"])).state;
+  state = unwrap(startEncounter(state));
+  state = unwrap(useReaction(state, "brann")).state;
+
+  const advanced = unwrap(nextTurn(state));
+  if (advanced.entry.id !== "brann") {
+    assert.equal(advanced.state.combatants["brann"]!.reactionUsed, true);
+  }
+});
+
+test("using a slot through the encounter logs the remaining count", () => {
+  const r = unwrap(useSlot(withCaster(), "brann", 3));
+  assert.match(r.note, /1 of 2 left/);
+});
+
+test("a long rest through the encounter restores the party", () => {
+  let state = withCaster();
+  state = unwrap(useSlot(state, "brann", 3)).state;
+  state = unwrap(damageCombatant(state, "brann", [{ amount: 20, type: "fire" }])).state;
+
+  const r = unwrap(restLong(state, ["brann"]));
+  assert.equal(r.state.combatants["brann"]!.spellSlots!["3"]!.used, 0);
+  assert.equal(r.state.combatants["brann"]!.hp.current, 30);
 });

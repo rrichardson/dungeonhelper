@@ -53,6 +53,18 @@ export interface DeathSaves {
   readonly failures: number;
 }
 
+export interface SlotPool {
+  readonly max: number;
+  readonly used: number;
+}
+
+export interface HitDice {
+  /** Die size, e.g. 8 for d8. Mixed-class characters use their largest. */
+  readonly size: number;
+  readonly max: number;
+  readonly used: number;
+}
+
 export interface Concentration {
   readonly spell: string;
   /** Round the spell was cast, for tracking duration. */
@@ -96,6 +108,13 @@ export interface Combatant {
   /** Player characters drop to 0 and make death saves; others are dispatched. */
   readonly isPlayer: boolean;
   readonly attacks?: readonly WeaponAttack[];
+  /** Ability used for spell attack rolls and save DCs, when the creature casts. */
+  readonly spellcastingAbility?: Ability;
+  /** Spell slots by level, 1-9. Absent for creatures that cast none. */
+  readonly spellSlots?: Readonly<Record<string, SlotPool>>;
+  readonly hitDice?: HitDice;
+  /** Reactions refresh at the start of the creature's turn. */
+  readonly reactionUsed?: boolean;
   readonly notes?: string;
 }
 
@@ -119,6 +138,12 @@ export function isDead(c: Combatant): boolean {
  */
 export function isDefeated(c: Combatant): boolean {
   return isDead(c) || (c.hp.current <= 0 && !c.isPlayer);
+}
+
+/** Spell save DC: 8 + proficiency bonus + spellcasting ability modifier. */
+export function spellSaveDc(c: Combatant): number | null {
+  if (c.spellcastingAbility === undefined) return null;
+  return 8 + c.proficiencyBonus + abilityModifier(c.abilities[c.spellcastingAbility]);
 }
 
 export function hasCondition(c: Combatant, name: ConditionName): boolean {

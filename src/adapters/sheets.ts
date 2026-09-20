@@ -12,7 +12,7 @@ import { type Result, ok, err } from "../engine/result.ts";
 import {
   ABILITIES, DAMAGE_TYPES, CONDITION_NAMES,
   type Ability, type AppliedCondition, type Combatant, type DamageType,
-  type ConditionName, type WeaponAttack,
+  type ConditionName, type WeaponAttack, type SlotPool, type HitDice,
 } from "../engine/types.ts";
 
 type Obj = Record<string, unknown>;
@@ -150,6 +150,47 @@ function parseConditions(o: Obj, where: string): Result<AppliedCondition[], stri
   return ok(out);
 }
 
+/** Spell slots as {"1": {"max": 4, "used": 1}, ...}. */
+function parseSlots(o: Obj, where: string): Result<Record<string, SlotPool> | undefined, string> {
+  const raw = o["spellSlots"];
+  if (raw === undefined) return ok(undefined);
+  if (!isObj(raw)) return err(`${where}: "spellSlots" must be an object keyed by level`);
+
+  const out: Record<string, SlotPool> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const level = Number(key);
+    if (!Number.isInteger(level) || level < 1 || level > 9) {
+      return err(`${where}: spellSlots key "${key}" must be a level 1-9`);
+    }
+    if (!isObj(value)) return err(`${where}: spellSlots.${key} must be {max, used}`);
+    const max = num(value, "max", `${where}: spellSlots.${key}`);
+    if (!max.ok) return max;
+    const used = num(value, "used", `${where}: spellSlots.${key}`, 0);
+    if (!used.ok) return used;
+    if (max.value < 0) return err(`${where}: spellSlots.${key}.max cannot be negative`);
+    out[key] = { max: max.value, used: Math.max(0, Math.min(max.value, used.value)) };
+  }
+  return ok(out);
+}
+
+function parseHitDice(o: Obj, where: string): Result<HitDice | undefined, string> {
+  const raw = o["hitDice"];
+  if (raw === undefined) return ok(undefined);
+  if (!isObj(raw)) return err(`${where}: "hitDice" must be {size, max, used}`);
+  const size = num(raw, "size", `${where}: hitDice`);
+  if (!size.ok) return size;
+  const max = num(raw, "max", `${where}: hitDice`);
+  if (!max.ok) return max;
+  const used = num(raw, "used", `${where}: hitDice`, 0);
+  if (!used.ok) return used;
+  if (size.value < 1) return err(`${where}: hitDice.size must be a positive die size`);
+  return ok({
+    size: size.value,
+    max: Math.max(0, max.value),
+    used: Math.max(0, Math.min(Math.max(0, max.value), used.value)),
+  });
+}
+
 /** Parse one stat block. `where` names the file for error messages. */
 export function parseCombatant(value: unknown, where: string): Result<Combatant, string> {
   if (!isObj(value)) return err(`${where}: expected a JSON object`);
@@ -201,6 +242,18 @@ export function parseCombatant(value: unknown, where: string): Result<Combatant,
   const attacks = parseAttacks(value, where);
   if (!attacks.ok) return attacks;
 
+  const spellSlots = parseSlots(value, where);
+  if (!spellSlots.ok) return spellSlots;
+  const hitDice = parseHitDice(value, where);
+  if (!hitDice.ok) return hitDice;
+
+  const rawCastingAbility = value["spellcastingAbility"];
+  if (rawCastingAbility !== undefined
+      && (typeof rawCastingAbility !== "string"
+          || !ABILITIES.includes(rawCastingAbility as Ability))) {
+    return err(`${where}: "spellcastingAbility" must be one of ${ABILITIES.join(", ")}`);
+  }
+
   return ok({
     id: id.value,
     name: name.value,
@@ -221,6 +274,10 @@ export function parseCombatant(value: unknown, where: string): Result<Combatant,
     stable: false,
     isPlayer: value["isPlayer"] === true,
     attacks: attacks.value,
+    ...(rawCastingAbility !== undefined ? { spellcastingAbility: rawCastingAbility as Ability } : {}),
+    ...(spellSlots.value !== undefined ? { spellSlots: spellSlots.value } : {}),
+    ...(hitDice.value !== undefined ? { hitDice: hitDice.value } : {}),
+    ...(value["reactionUsed"] === true ? { reactionUsed: true } : {}),
     ...(typeof value["notes"] === "string" ? { notes: value["notes"] } : {}),
   });
 }

@@ -16,6 +16,8 @@ import { savingThrow, abilityCheck, concentrationSave, type CheckRequest, type C
 import { rollDeathSave, stabilise, type DeathSaveOutcome } from "./death.ts";
 import { rollInitiative, sortInitiative, type InitiativeEntry, type InitiativeOptions } from "./initiative.ts";
 import { canApply, effectiveSpeed, isIncapacitated } from "./conditions.ts";
+import { resolveSpell, type SpellRequest, type SpellOutcome } from "./spell.ts";
+import { spendSlot, restoreSlots, shortRest, longRest, slotsOf, type SlotView, type RestOutcome } from "./resources.ts";
 import type { Ability, Combatant, ConditionName } from "./types.ts";
 
 export interface LogLine {
@@ -184,7 +186,14 @@ export function nextTurn(
   const entry = state.order[nextIndex]!;
 
   const lines = newRound ? [`Round ${round} begins`, `${entry.name}'s turn`] : [`${entry.name}'s turn`];
-  const advanced = { ...state, turnIndex: nextIndex, round };
+
+  // A creature regains its reaction at the start of its own turn.
+  const acting = state.combatants[entry.id];
+  const combatants = acting?.reactionUsed
+    ? { ...state.combatants, [entry.id]: { ...acting, reactionUsed: false } }
+    : state.combatants;
+
+  const advanced = { ...state, turnIndex: nextIndex, round, combatants };
 
   return ok({ state: { ...advanced, log: appendLog(advanced, lines, null) }, entry, newRound });
 }
@@ -526,3 +535,247 @@ export function status(state: EncounterState): readonly CombatantStatus[] {
 }
 
 export { type Ability };
+
+
+// ── Spells, resources and rests ───────────────────────────────────────────
+
+export interface CastParams {
+  readonly casterId: string;
+  readonly name: string;
+  readonly dc: number;
+  readonly ability: Ability;
+  readonly damage: SpellRequest["damage"];
+  readonly onSuccess: SpellRequest["onSuccess"];
+  readonly targetIds: readonly string[];
+  /** Spend a slot of this level from the caster. */
+  readonly slotLevel?: number;
+  /** Start concentrating on this spell once it resolves. */
+  readonly concentrate?: boolean;
+}
+
+export interface CastReport {
+  readonly outcome: SpellOutcome;
+  readonly seed: string;
+  readonly slotSpent: number | null;
+  readonly concentrationChecks: readonly { targetId: string; check: CheckOutcome; broken: boolean }[];
+}
+
+export function castSpell(
+  state: EncounterState,
+  params: CastParams,
+): Result<{ state: EncounterState; report: CastReport }, string> {
+  const caster = getCombatant(state, params.casterId);
+  if (!caster.ok) return caster;
+
+  const targets: Combatant[] = [];
+  for (const id of params.targetIds) {
+    const found = getCombatant(state, id);
+    if (!found.ok) return found;
+    targets.push(found.value);
+  }
+
+  let working = state;
+
+  // Spend the slot first: a caster without the slot never rolls the spell.
+  let slotSpent: number | null = null;
+  if (params.slotLevel !== undefined) {
+    const spent = spendSlot(caster.value, params.slotLevel);
+    if (!spent.ok) return spent;
+    working = withCombatant(working, spent.value);
+    slotSpent = params.slotLevel;
+  }
+
+  const { rng, seed, rollCount } = nextRng(working);
+  const resolved = resolveSpell(
+    {
+      name: params.name,
+      dc: params.dc,
+      ability: params.ability,
+      damage: params.damage,
+      onSuccess: params.onSuccess,
+      targets,
+    },
+    rng,
+  );
+  if (!resolved.ok) return resolved;
+
+  working = { ...working, rollCount };
+  const outcome = resolved.value;
+  const lines: string[] = [
+    `${caster.value.name} casts ${params.name} (DC ${params.dc} ${params.ability.toUpperCase()})` +
+      (slotSpent ? ` using a level ${slotSpent} slot` : ""),
+  ];
+  if (outcome.damageRolls.length > 0) {
+    lines.push(`  damage rolled once for the area: ${outcome.baseTotal}`);
+  }
+
+  const concentrationChecks: { targetId: string; check: CheckOutcome; broken: boolean }[] = [];
+
+  for (const t of outcome.targets) {
+    if (t.damage === null) {
+      lines.push(
+        `  ${t.targetName}: ${t.save.autoFailed ? t.save.reason : t.save.roll!.total} vs DC ${params.dc}` +
+          ` — ${t.save.success ? "success" : "failure"}${t.avoided ? ", no damage" : ""}`,
+      );
+      continue;
+    }
+
+    working = withCombatant(working, t.damage.combatant);
+    lines.push(
+      `  ${t.targetName}: ${t.save.autoFailed ? "auto-fail" : t.save.roll!.total} vs DC ${params.dc} — ` +
+        `${t.save.success ? "success" : "failure"}${t.halved ? " (half)" : ""}, ` +
+        `${t.damage.adjustedTotal} damage (${t.damage.hpBefore} → ${t.damage.hpAfter} HP)`,
+    );
+    for (const note of t.damage.notes) lines.push(`    ${note}`);
+    if (t.damage.died) lines.push(`    ${t.targetName} dies`);
+
+    if (t.damage.concentrationCheck) {
+      const next = nextRng(working);
+      const check = concentrationSave(t.damage.combatant, t.damage.concentrationCheck.dc, next.rng);
+      working = { ...working, rollCount: next.rollCount };
+      const broken = !check.success;
+      if (broken) {
+        working = withCombatant(working, { ...t.damage.combatant, concentration: null });
+        lines.push(`    concentration on ${t.damage.concentrationCheck.spell} is broken`);
+      }
+      concentrationChecks.push({ targetId: t.targetId, check, broken });
+    }
+  }
+
+  if (params.concentrate === true) {
+    const started = setConcentration(working, params.casterId, params.name);
+    if (!started.ok) return started;
+    working = started.value;
+  }
+
+  return ok({
+    state: { ...working, log: appendLog(working, lines, seed) },
+    report: { outcome, seed, slotSpent, concentrationChecks },
+  });
+}
+
+/** Resolve the same attack several times, as Extra Attack or Multiattack. */
+export function performAttacks(
+  state: EncounterState,
+  params: AttackParams,
+  times: number,
+): Result<{ state: EncounterState; reports: readonly AttackReport[] }, string> {
+  const count = Math.max(1, Math.trunc(times));
+  let working = state;
+  const reports: AttackReport[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const result = performAttack(working, params);
+    if (!result.ok) {
+      // A later swing may be refused because the target has already fallen;
+      // earlier swings still happened and are kept.
+      if (reports.length === 0) return result;
+      return ok({ state: working, reports });
+    }
+    working = result.value.state;
+    reports.push(result.value.report);
+  }
+  return ok({ state: working, reports });
+}
+
+export function spellSlots(state: EncounterState, id: string): Result<readonly SlotView[], string> {
+  const found = getCombatant(state, id);
+  if (!found.ok) return found;
+  return ok(slotsOf(found.value));
+}
+
+export function useSlot(
+  state: EncounterState,
+  id: string,
+  level: number,
+): Result<{ state: EncounterState; note: string }, string> {
+  const found = getCombatant(state, id);
+  if (!found.ok) return found;
+  const spent = spendSlot(found.value, level);
+  if (!spent.ok) return spent;
+
+  const pool = spent.value.spellSlots![String(level)]!;
+  const note = `${found.value.name} spends a level ${level} slot (${pool.max - pool.used} of ${pool.max} left)`;
+  const working = withCombatant(state, spent.value);
+  return ok({ state: { ...working, log: appendLog(working, [note], null) }, note });
+}
+
+export function regainSlots(
+  state: EncounterState,
+  id: string,
+  level: number | null,
+): Result<{ state: EncounterState; note: string }, string> {
+  const found = getCombatant(state, id);
+  if (!found.ok) return found;
+  const restored = restoreSlots(found.value, level);
+  const note = `${found.value.name} regains ${level === null ? "all spell slots" : `level ${level} slots`}`;
+  const working = withCombatant(state, restored);
+  return ok({ state: { ...working, log: appendLog(working, [note], null) }, note });
+}
+
+export function restShort(
+  state: EncounterState,
+  id: string,
+  diceToSpend: number,
+): Result<{ state: EncounterState; outcome: RestOutcome; seed: string }, string> {
+  const found = getCombatant(state, id);
+  if (!found.ok) return found;
+
+  const { rng, seed, rollCount } = nextRng(state);
+  const rested = shortRest(found.value, diceToSpend, rng);
+  if (!rested.ok) return rested;
+
+  const working = withCombatant({ ...state, rollCount }, rested.value.combatant);
+  return ok({
+    state: {
+      ...working,
+      log: appendLog(working, [
+        `${found.value.name} takes a short rest: +${rested.value.healed} HP`,
+        ...rested.value.notes.map((n) => `  ${n}`),
+      ], seed),
+    },
+    outcome: rested.value,
+    seed,
+  });
+}
+
+export function restLong(
+  state: EncounterState,
+  ids: readonly string[],
+): Result<{ state: EncounterState; outcomes: readonly { id: string; outcome: RestOutcome }[] }, string> {
+  let working = state;
+  const outcomes: { id: string; outcome: RestOutcome }[] = [];
+
+  for (const id of ids) {
+    const found = getCombatant(working, id);
+    if (!found.ok) return found;
+    const outcome = longRest(found.value);
+    working = withCombatant(working, outcome.combatant);
+    working = {
+      ...working,
+      log: appendLog(working, [
+        `${found.value.name} finishes a long rest`,
+        ...outcome.notes.map((n) => `  ${n}`),
+      ], null),
+    };
+    outcomes.push({ id, outcome });
+  }
+  return ok({ state: working, outcomes });
+}
+
+export function useReaction(
+  state: EncounterState,
+  id: string,
+): Result<{ state: EncounterState; note: string }, string> {
+  const found = getCombatant(state, id);
+  if (!found.ok) return found;
+  if (found.value.reactionUsed === true) {
+    return err(`${found.value.name} has already used a reaction this round`);
+  }
+  if (isIncapacitated(found.value)) {
+    return err(`${found.value.name} is incapacitated and cannot take reactions`);
+  }
+  const working = withCombatant(state, { ...found.value, reactionUsed: true });
+  const note = `${found.value.name} uses their reaction`;
+  return ok({ state: { ...working, log: appendLog(working, [note], null) }, note });
+}

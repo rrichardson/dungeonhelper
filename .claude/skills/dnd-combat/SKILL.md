@@ -42,6 +42,24 @@ state of both combatants. Only pass `--adv` / `--dis` for circumstances the
 engine cannot know: cover, spells, terrain, features, DM rulings. Give a
 reason string — it appears in the log.
 
+## Spells with saving throws
+
+Area and save-based spells go through `cast`, not `damage`:
+
+    dnd cast brann "Fireball" --save dex --damage "8d6:fire" \
+        --targets goblin-1,goblin-2,ogre --slot 3
+    dnd cast wizard "Hold Person" --save wis --target ogre --on-success none
+    dnd cast brann "Spirit Guardians" --save wis --damage "3d8:radiant" \
+        --target ogre --slot 3 --concentrate
+
+The DC comes from the caster's sheet when they have a spellcasting ability;
+pass `--dc N` otherwise. `--on-success` is `half` by default, `none` for
+spells a save avoids entirely.
+
+Damage is rolled **once** for the whole area and the same total applies to
+every target — that is the rule, and re-rolling per creature is wrong. Never
+run `cast` once per target to simulate an area effect.
+
 ## Other resolution
 
     dnd damage goblin-1 12:fire 4:piercing    # direct damage, several types
@@ -56,6 +74,24 @@ reason string — it appears in the log.
     dnd exhaustion aria 2
     dnd concentrate brann "Spirit Guardians"   # --off to drop it
     dnd roll 2d6+3                             # a standalone roll
+    dnd reaction aria                          # spend this round's reaction
+
+Multiple attacks in one turn — Extra Attack, a monster's Multiattack — use
+`--times`, which rolls each swing separately and stops if the target falls:
+
+    dnd attack ogre aria --weapon greatclub --times 2
+
+## Resources and rests
+
+    dnd slots brann                    # show remaining spell slots
+    dnd slots brann --use 3            # spend one without casting
+    dnd slots brann --restore all
+    dnd rest short aria --hit-dice 2   # spend hit dice to heal
+    dnd rest long                      # every player character
+
+A long rest restores hit points and slots, returns half the hit dice, and
+removes one level of exhaustion. Reactions refresh automatically at the start
+of each creature's own turn.
 
 ## Imported characters
 

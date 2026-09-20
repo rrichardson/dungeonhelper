@@ -3,14 +3,51 @@
   "name": "Aria",
   "isPlayer": true,
   "ac": 18,
-  "hp": { "max": 31, "current": 31 },
-  "abilities": { "str": 16, "dex": 14, "con": 15, "int": 10, "wis": 12, "cha": 8 },
+  "hp": {
+    "max": 31,
+    "current": 31
+  },
+  "abilities": {
+    "str": 16,
+    "dex": 14,
+    "con": 15,
+    "int": 10,
+    "wis": 12,
+    "cha": 8
+  },
   "proficiencyBonus": 3,
-  "saveProficiencies": ["str", "con"],
+  "saveProficiencies": [
+    "str",
+    "con"
+  ],
   "speed": 30,
   "attacks": [
-    { "name": "longsword", "bonus": 6, "damage": [{ "expression": "1d8+4", "type": "slashing" }] },
-    { "name": "longbow", "bonus": 5, "melee": false, "damage": [{ "expression": "1d8+2", "type": "piercing" }] }
+    {
+      "name": "longsword",
+      "bonus": 6,
+      "damage": [
+        {
+          "expression": "1d8+4",
+          "type": "slashing"
+        }
+      ]
+    },
+    {
+      "name": "longbow",
+      "bonus": 5,
+      "melee": false,
+      "damage": [
+        {
+          "expression": "1d8+2",
+          "type": "piercing"
+        }
+      ]
+    }
   ],
-  "notes": "Level 5 fighter. Example sheet."
+  "notes": "Level 5 fighter. Example sheet.",
+  "hitDice": {
+    "size": 10,
+    "max": 5,
+    "used": 0
+  }
 }

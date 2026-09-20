@@ -17,7 +17,8 @@ import {
   createEncounter, addCombatant, removeCombatant, rollInitiativeFor, startEncounter,
   nextTurn, currentTurn, performAttack, damageCombatant, healCombatant, grantTempHp,
   setCondition, setExhaustion, performCheck, performDeathSave, stabiliseCombatant,
-  setConcentration, status, getCombatant, type EncounterState,
+  setConcentration, status, getCombatant, castSpell, performAttacks, spellSlots,
+  useSlot, regainSlots, restShort, restLong, useReaction, type EncounterState,
 } from "../engine/encounter.ts";
 import { loadEncounter, saveEncounter, encounterPath, listEncounters } from "../adapters/store.ts";
 import { findSheet, listSheets } from "../adapters/sheets.ts";
@@ -31,6 +32,8 @@ import {
   parseInteger, parseSuppliedDice,
 } from "./args.ts";
 import type { DamagePacket } from "../engine/damage.ts";
+import { spellSaveDc } from "../engine/types.ts";
+import { formatCast, formatSlots } from "../adapters/format.ts";
 import type { InitiativeOptions } from "../engine/initiative.ts";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -52,7 +55,9 @@ Encounter setup
 Resolution
   attack <attacker> <target> [--weapon NAME | --bonus N --damage EXPR:TYPE]
          [--adv REASON] [--dis REASON] [--cover half|three-quarters|total]
-         [--ranged] [--crit-range N] [--force]
+         [--ranged] [--crit-range N] [--times N] [--force]
+  cast <caster> <spell> --save ABILITY --damage EXPR:TYPE --target ID...
+       [--dc N] [--on-success half|none] [--slot N] [--concentrate]
   damage <target> <AMOUNT:TYPE>...   apply damage directly
   heal <target> <amount>
   temphp <target> <amount>
@@ -63,6 +68,12 @@ Resolution
   condition <target> <name> [--off] [--source ID]
   exhaustion <target> <level>
   concentrate <target> <spell> | concentrate <target> --off
+  reaction <target>                  spend this round's reaction
+
+Resources
+  slots <id> [--use N] [--restore N|all]
+  rest short <id> [--hit-dice N]
+  rest long [ids...]                 defaults to every player character
 
 Characters
   import <id|url>                    import a character from D&D Beyond
@@ -110,6 +121,17 @@ const options = {
   out: { type: "string" as const },
   raw: { type: "string" as const },
   "dry-run": { type: "boolean" as const },
+  dc: { type: "string" as const },
+  save: { type: "string" as const },
+  target: { type: "string" as const, multiple: true },
+  targets: { type: "string" as const },
+  "on-success": { type: "string" as const },
+  slot: { type: "string" as const },
+  concentrate: { type: "boolean" as const },
+  times: { type: "string" as const },
+  use: { type: "string" as const },
+  restore: { type: "string" as const },
+  "hit-dice": { type: "string" as const },
   help: { type: "boolean" as const, short: "h" },
 };
 
@@ -140,6 +162,17 @@ interface Flags {
   out?: string;
   raw?: string;
   "dry-run"?: boolean;
+  dc?: string;
+  save?: string;
+  target?: string[];
+  targets?: string;
+  "on-success"?: string;
+  slot?: string;
+  concentrate?: boolean;
+  times?: string;
+  use?: string;
+  restore?: string;
+  "hit-dice"?: string;
   help?: boolean;
 }
 
@@ -409,7 +442,10 @@ const cmdAttack: Handler = async (positionals, flags) => {
     const cover = parseCover(flags.cover);
     if (!cover.ok) return cover;
 
-    const result = performAttack(state, {
+    const timesParsed = parseInteger(flags.times ?? "1", "--times");
+    if (!timesParsed.ok) return timesParsed;
+
+    const result = performAttacks(state, {
       attackerId, targetId, weapon,
       attackBonus: bonus,
       damage,
@@ -419,14 +455,15 @@ const cmdAttack: Handler = async (positionals, flags) => {
       advantage: flags.adv ?? [],
       disadvantage: flags.dis ?? [],
       force: flags.force ?? false,
-    });
+    }, timesParsed.value);
     if (!result.ok) return result;
 
+    const { state: next, reports } = result.value;
     return ok({
-      state: result.value.state,
+      state: next,
       emission: {
-        text: formatAttack(result.value.report, result.value.state),
-        json: result.value.report,
+        text: reports.map((r) => formatAttack(r, next)).join("\n\n"),
+        json: reports.length === 1 ? reports[0] : { attacks: reports },
       },
     });
   });
@@ -610,6 +647,166 @@ const cmdConcentrate: Handler = async (positionals, flags) => {
   });
 };
 
+function collectTargets(flags: Flags): string[] {
+  const listed = (flags.targets ?? "").split(",").map((t) => t.trim()).filter((t) => t !== "");
+  return [...(flags.target ?? []), ...listed];
+}
+
+const cmdCast: Handler = async (positionals, flags) => {
+  const [casterId, ...nameParts] = positionals;
+  const name = nameParts.join(" ").trim();
+  if (!casterId || name === "") {
+    return err(`usage: dnd cast <caster> <spell> --save dex --damage "8d6:fire" --target goblin-1 [--dc N]`);
+  }
+
+  const targetIds = collectTargets(flags);
+  if (targetIds.length === 0) return err("name at least one --target (or --targets a,b,c)");
+
+  const ability = parseAbility(flags.save ?? "");
+  if (!ability.ok) return err(`--save is required: ${ability.error}`);
+
+  const damage = parseDamageSpecs(flags.damage ?? []);
+  if (!damage.ok) return damage;
+
+  const onSuccessRaw = (flags["on-success"] ?? "half").toLowerCase();
+  if (onSuccessRaw !== "half" && onSuccessRaw !== "none") {
+    return err(`--on-success must be "half" or "none", got "${onSuccessRaw}"`);
+  }
+
+  let slotLevel: number | undefined;
+  if (flags.slot !== undefined) {
+    const parsed = parseInteger(flags.slot, "--slot");
+    if (!parsed.ok) return parsed;
+    slotLevel = parsed.value;
+  }
+
+  return withState(flags, (state) => {
+    const caster = getCombatant(state, casterId);
+    if (!caster.ok) return caster;
+
+    // Fall back to the caster's own save DC when one is not given.
+    let dc: number;
+    if (flags.dc !== undefined) {
+      const parsed = parseInteger(flags.dc, "--dc");
+      if (!parsed.ok) return parsed;
+      dc = parsed.value;
+    } else {
+      const derived = spellSaveDc(caster.value);
+      if (derived === null) {
+        return err(`${caster.value.name} has no spellcasting ability on their sheet — pass --dc`);
+      }
+      dc = derived;
+    }
+
+    const result = castSpell(state, {
+      casterId, name, dc,
+      ability: ability.value,
+      damage: damage.value,
+      onSuccess: onSuccessRaw,
+      targetIds,
+      ...(slotLevel !== undefined ? { slotLevel } : {}),
+      ...(flags.concentrate ? { concentrate: true } : {}),
+    });
+    if (!result.ok) return result;
+
+    return ok({
+      state: result.value.state,
+      emission: {
+        text: formatCast(result.value.report, caster.value.name),
+        json: result.value.report,
+      },
+    });
+  });
+};
+
+const cmdSlots: Handler = async (positionals, flags) => {
+  const id = positionals[0];
+  if (!id) return err("usage: dnd slots <id> [--use N] [--restore N|all]");
+
+  if (flags.use !== undefined) {
+    const level = parseInteger(flags.use, "--use");
+    if (!level.ok) return level;
+    return withState(flags, (state) => {
+      const result = useSlot(state, id, level.value);
+      if (!result.ok) return result;
+      return ok({ state: result.value.state, emission: { text: result.value.note, json: { note: result.value.note } } });
+    });
+  }
+
+  if (flags.restore !== undefined) {
+    const all = flags.restore.toLowerCase() === "all";
+    let level: number | null = null;
+    if (!all) {
+      const parsed = parseInteger(flags.restore, "--restore");
+      if (!parsed.ok) return parsed;
+      level = parsed.value;
+    }
+    return withState(flags, (state) => {
+      const result = regainSlots(state, id, level);
+      if (!result.ok) return result;
+      return ok({ state: result.value.state, emission: { text: result.value.note, json: { note: result.value.note } } });
+    });
+  }
+
+  const state = await readState(flags);
+  if (!state.ok) return state;
+  const view = spellSlots(state.value, id);
+  if (!view.ok) return view;
+  const name = state.value.combatants[id]!.name;
+  return ok({ text: formatSlots(view.value, name), json: { slots: view.value } });
+};
+
+const cmdRest: Handler = async (positionals, flags) => {
+  const kind = (positionals[0] ?? "").toLowerCase();
+  if (kind !== "short" && kind !== "long") {
+    return err("usage: dnd rest short <id> [--hit-dice N]   |   dnd rest long [ids...]");
+  }
+
+  if (kind === "short") {
+    const id = positionals[1];
+    if (!id) return err("usage: dnd rest short <id> [--hit-dice N]");
+    const dice = parseInteger(flags["hit-dice"] ?? "0", "--hit-dice");
+    if (!dice.ok) return dice;
+
+    return withState(flags, (state) => {
+      const result = restShort(state, id, dice.value);
+      if (!result.ok) return result;
+      const o = result.value.outcome;
+      return ok({
+        state: result.value.state,
+        emission: {
+          text: [`${o.combatant.name} short rest: +${o.healed} HP`, ...o.notes.map((n) => `  ${n}`), `  (seed ${result.value.seed})`].join("\n"),
+          json: { healed: o.healed, notes: o.notes, seed: result.value.seed },
+        },
+      });
+    });
+  }
+
+  return withState(flags, (state) => {
+    const ids = positionals.slice(1).length > 0
+      ? positionals.slice(1)
+      : Object.values(state.combatants).filter((c) => c.isPlayer).map((c) => c.id);
+    if (ids.length === 0) return err("no player characters to rest — name ids explicitly");
+
+    const result = restLong(state, ids);
+    if (!result.ok) return result;
+    const text = result.value.outcomes
+      .map(({ outcome }) => [`${outcome.combatant.name} long rest`, ...outcome.notes.map((n) => `  ${n}`)].join("\n"))
+      .join("\n");
+    return ok({ state: result.value.state, emission: { text, json: { rested: ids } } });
+  });
+};
+
+const cmdReaction: Handler = async (positionals, flags) => {
+  const id = positionals[0];
+  if (!id) return err("usage: dnd reaction <id>");
+  return withState(flags, (state) => {
+    const result = useReaction(state, id);
+    if (!result.ok) return result;
+    return ok({ state: result.value.state, emission: { text: result.value.note, json: { note: result.value.note } } });
+  });
+};
+
 const cmdImport: Handler = async (positionals, flags) => {
   const result = await runImport({
     ref: positionals[0],
@@ -673,6 +870,10 @@ const COMMANDS: Record<string, Handler> = {
   condition: cmdCondition,
   exhaustion: cmdExhaustion,
   concentrate: cmdConcentrate,
+  cast: cmdCast,
+  slots: cmdSlots,
+  rest: cmdRest,
+  reaction: cmdReaction,
   import: cmdImport,
   sheets: cmdSheets,
   encounters: cmdEncounters,

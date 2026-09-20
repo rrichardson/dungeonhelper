@@ -2,7 +2,8 @@
 
 import type { DiceResult } from "../engine/dice.ts";
 import { describeD20 } from "../engine/d20.ts";
-import type { AttackReport, CombatantStatus, EncounterState, LogLine } from "../engine/encounter.ts";
+import type { AttackReport, CastReport, CombatantStatus, EncounterState, LogLine } from "../engine/encounter.ts";
+import type { SlotView } from "../engine/resources.ts";
 import type { CheckOutcome } from "../engine/checks.ts";
 import type { DeathSaveOutcome } from "../engine/death.ts";
 import type { InitiativeEntry } from "../engine/initiative.ts";
@@ -150,4 +151,55 @@ export function formatLog(log: readonly LogLine[], limit: number): string {
   return slice
     .map((l) => `  [r${l.round}] ${l.text}${l.seed ? `  (${l.seed})` : ""}`)
     .join("\n");
+}
+
+export function formatSlots(slots: readonly SlotView[], name: string): string {
+  if (slots.length === 0) return `${name} has no spell slots.`;
+  const rows = slots.map(
+    (s) => `  level ${s.level}: ${"●".repeat(s.remaining)}${"○".repeat(s.used)}  ${s.remaining}/${s.max}`,
+  );
+  return [`${name} — spell slots`, ...rows].join("\n");
+}
+
+export function formatCast(report: CastReport, casterName: string): string {
+  const o = report.outcome;
+  const lines: string[] = [];
+
+  const slot = report.slotSpent ? `, level ${report.slotSpent} slot` : "";
+  lines.push(`${casterName} casts ${o.name} (DC ${o.dc} ${o.ability.toUpperCase()}${slot})`);
+
+  for (const { spec, result } of o.damageRolls) {
+    lines.push(`  ${describeDice(result)} ${spec.type} — rolled once for the area`);
+  }
+
+  for (const t of o.targets) {
+    const rolled = t.save.autoFailed
+      ? (t.save.reason ?? "automatic failure")
+      : describeD20(t.save.roll!);
+    const verdict = t.save.success ? "SAVE" : "FAIL";
+    lines.push(`  ${t.targetName}: ${rolled} → ${verdict}`);
+
+    if (t.avoided) {
+      lines.push(`    no damage`);
+      continue;
+    }
+    if (t.damage === null) continue;
+
+    lines.push(
+      `    ${t.damage.adjustedTotal} damage${t.halved ? " (halved by the save)" : ""}` +
+        `  ${t.damage.hpBefore} → ${t.damage.hpAfter} HP`,
+    );
+    for (const p of t.damage.packets) {
+      if (p.adjustment !== "normal") lines.push(`    ${p.type} ${p.adjustment}: ${p.before} → ${p.after}`);
+    }
+    for (const note of t.damage.notes) lines.push(`    ! ${note}`);
+    if (t.damage.died) lines.push(`    ! ${t.targetName} dies`);
+  }
+
+  for (const c of report.concentrationChecks) {
+    lines.push(`  concentration (${c.targetId}): ${c.broken ? "BROKEN" : "holds"}`);
+  }
+
+  lines.push(`  (seed ${report.seed})`);
+  return lines.join("\n");
 }
