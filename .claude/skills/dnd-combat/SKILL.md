@@ -156,6 +156,19 @@ Do not re-derive these by hand — they are applied automatically:
 - exhaustion as −2 per level on all d20 tests and −5 ft speed per level
 - unconscious implying both prone and incapacitated
 
+## Generating content
+
+    dnd gen merchant --kind smithy       # shop, proprietor, priced stock
+    dnd gen town --size village          # settlement, problem, rumours, trades
+    dnd gen wilderness --width 10 --height 6 --terrain forest
+
+Generation is seeded like everything else: the same seed reproduces the same
+shop or map, so a location stays stable once the party has visited it. Record
+the seed with the location.
+
+Merchant output ends with a "DM only" line — a secret about the proprietor.
+Do not read that one aloud.
+
 ## When the engine does not model something
 
 Say so and ask the DM how they want to rule it. Do not approximate with mental

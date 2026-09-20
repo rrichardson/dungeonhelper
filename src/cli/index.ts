@@ -27,6 +27,10 @@ import {
   formatStatus, formatLog,
 } from "../adapters/format.ts";
 import { runImport } from "./import-run.ts";
+import { generateMerchant, shopKinds } from "../engine/generate/merchant.ts";
+import { generateSettlement, settlementSizes } from "../engine/generate/settlement.ts";
+import { generateWilderness, terrainNames, type WildernessOptions } from "../engine/generate/wilderness.ts";
+import { formatMerchant, formatSettlement, formatWilderness } from "../adapters/generate-format.ts";
 import {
   parseDamageSpecs, parseFlatDamage, parseAbility, parseCondition, parseCover,
   parseInteger, parseSuppliedDice,
@@ -80,6 +84,11 @@ Characters
   import --from <file>               import a saved payload
          [--out DIR] [--raw FILE] [--dry-run]
 
+Generation
+  gen merchant [--kind KIND] [--lines N]
+  gen town [--size hamlet|village|town|city] [--shops N]
+  gen wilderness [--width N] [--height N] [--terrain T] [--scale MILES]
+
 Utility
   roll <expr> [--seed S] [--dice 17,4]   a standalone roll
   sheets                                  list available stat blocks
@@ -132,6 +141,14 @@ const options = {
   use: { type: "string" as const },
   restore: { type: "string" as const },
   "hit-dice": { type: "string" as const },
+  kind: { type: "string" as const },
+  size: { type: "string" as const },
+  width: { type: "string" as const },
+  height: { type: "string" as const },
+  terrain: { type: "string" as const },
+  shops: { type: "string" as const },
+  lines: { type: "string" as const },
+  scale: { type: "string" as const },
   help: { type: "boolean" as const, short: "h" },
 };
 
@@ -173,6 +190,14 @@ interface Flags {
   use?: string;
   restore?: string;
   "hit-dice"?: string;
+  kind?: string;
+  size?: string;
+  width?: string;
+  height?: string;
+  terrain?: string;
+  shops?: string;
+  lines?: string;
+  scale?: string;
   help?: boolean;
 }
 
@@ -820,6 +845,74 @@ const cmdImport: Handler = async (positionals, flags) => {
   return ok({ text: result.value.text, json: result.value.json });
 };
 
+const cmdGen: Handler = async (positionals, flags) => {
+  const what = (positionals[0] ?? "").toLowerCase();
+  const seed = flags.seed ?? randomUUID().slice(0, 8);
+  const rng = makeRng(seed);
+
+  const optionalInt = (raw: string | undefined, label: string): Result<number | undefined, string> => {
+    if (raw === undefined) return ok(undefined);
+    const parsed = parseInteger(raw, label);
+    return parsed.ok ? ok(parsed.value) : parsed;
+  };
+
+  switch (what) {
+    case "merchant":
+    case "shop": {
+      const lines = optionalInt(flags.lines, "--lines");
+      if (!lines.ok) return lines;
+      const made = generateMerchant(rng, {
+        ...(flags.kind !== undefined ? { kind: flags.kind } : {}),
+        ...(lines.value !== undefined ? { stockLines: lines.value } : {}),
+      });
+      if (!made.ok) return made;
+      return ok({ text: formatMerchant(made.value, seed), json: { ...made.value, seed } });
+    }
+
+    case "town":
+    case "settlement": {
+      if (flags.size !== undefined && !settlementSizes().includes(flags.size)) {
+        return err(`unknown size "${flags.size}"; expected one of ${settlementSizes().join(", ")}`);
+      }
+      const shops = optionalInt(flags.shops, "--shops");
+      if (!shops.ok) return shops;
+      const made = generateSettlement(rng, {
+        ...(flags.size !== undefined ? { size: flags.size } : {}),
+        ...(shops.value !== undefined ? { shops: shops.value } : {}),
+      });
+      return ok({ text: formatSettlement(made, seed), json: { ...made, seed } });
+    }
+
+    case "wilderness":
+    case "map": {
+      const width = optionalInt(flags.width, "--width");
+      if (!width.ok) return width;
+      const height = optionalInt(flags.height, "--height");
+      if (!height.ok) return height;
+      const scale = optionalInt(flags.scale, "--scale");
+      if (!scale.ok) return scale;
+
+      const options: WildernessOptions = {
+        ...(width.value !== undefined ? { width: width.value } : {}),
+        ...(height.value !== undefined ? { height: height.value } : {}),
+        ...(scale.value !== undefined ? { scaleMiles: scale.value } : {}),
+        ...(flags.terrain !== undefined ? { dominant: flags.terrain as WildernessOptions["dominant"] } : {}),
+      };
+      const made = generateWilderness(rng, options);
+      if (!made.ok) return made;
+      return ok({ text: formatWilderness(made.value, seed), json: { ...made.value, seed } });
+    }
+
+    default:
+      return err(
+        `usage: dnd gen <merchant|town|wilderness> [--seed S]\n` +
+          `  merchant   --kind <${shopKinds().join("|")}> [--lines N]\n` +
+          `  town       --size <${settlementSizes().join("|")}> [--shops N]\n` +
+          `  wilderness --width N --height N [--terrain <${terrainNames().join("|")}>] [--scale MILES]`,
+      );
+  }
+};
+
 const cmdSheets: Handler = async () => {
   const lines: string[] = [];
   const all: { id: string; path: string }[] = [];
@@ -874,6 +967,7 @@ const COMMANDS: Record<string, Handler> = {
   slots: cmdSlots,
   rest: cmdRest,
   reaction: cmdReaction,
+  gen: cmdGen,
   import: cmdImport,
   sheets: cmdSheets,
   encounters: cmdEncounters,
