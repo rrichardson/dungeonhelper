@@ -35,7 +35,8 @@ for a distance the DM actually knows.
 
     ./bin/dnd <command>                   # or: node src/cli/index.ts <command>
 
-Symlink `bin/dnd` onto your PATH to drop the prefix entirely.
+Symlink `bin/dnd` onto your PATH to drop the prefix entirely. On Windows,
+`bin\dnd.cmd` is the same wrapper; put `bin\` on PATH.
 `dnd --help` lists every command. Use `--json` when you need to read values
 back rather than show them to the DM.
 
@@ -56,11 +57,17 @@ table; it is re-validated on every load.
 
 ## The campaign wiki
 
-An Obsidian vault holds the campaign: the realm, the hook, the plot, NPCs,
-monsters, items and rooms. It is shared — the DM writes in it too — and it is
-the canon. The engine is live mechanical state, not a second source of truth.
+The campaign lives in an OpenKnowledge project: the realm, the hook, the plot,
+NPCs, monsters, items and rooms. It is shared and live — the DM writes in it
+too — and it is the canon. The engine is live mechanical state, not a second
+source of truth.
 
-    dnd vault status | search <text> | show <note> | import <note>
+    dnd wiki status | set <path> | import <note>
+
+Read and write notes through OpenKnowledge's MCP tools, as the dnd-campaign
+skill describes, never with native file tools. The campaign folder is
+configured (`campaign.json` or `DND_WIKI`), never assumed: this runs on
+Windows as well as macOS.
 
 Read before writing, and never overwrite a note you did not write without
 asking. Stat blocks written in the wiki import into runnable creatures; the

@@ -10,6 +10,7 @@
 import { parseArgs } from "node:util";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { roll as rollDice, parseDice, diceCount, range as diceRange } from "../engine/dice.ts";
 import { makeRng, makeFixedRng, FixedRngExhausted } from "../engine/rng.ts";
 import { type Result, ok, err } from "../engine/result.ts";
@@ -29,8 +30,8 @@ import {
 import { runImport } from "./import-run.ts";
 import { fetchMonster, lookup, type LookupKind } from "./lookup-run.ts";
 import {
-  resolveVault, setVault, listNotes, findNote, searchVault, wikilinks,
-} from "../adapters/vault.ts";
+  resolveWiki, setWiki, findProject, expandPath, listNotes, findNote,
+} from "../adapters/wiki.ts";
 import { parseStatBlock } from "../engine/import/statblock.ts";
 import { writeFile as writeFileAsync, mkdir as mkdirAsync } from "node:fs/promises";
 import { generateMerchant, shopKinds } from "../engine/generate/merchant.ts";
@@ -87,9 +88,8 @@ Resources
   rest long [ids...]                 defaults to every player character
 
 Campaign wiki
-  vault status | set <path> | list [folder] | search <text>
-  vault show <note> | links <note>
-  vault import <note> [--as ID] [--dry-run]
+  wiki status | set <path>          the campaign folder in OpenKnowledge
+  wiki import <note> [--as ID] [--dry-run]
 
 SRD reference
   lookup monster|spell|condition <name>
@@ -901,35 +901,44 @@ const cmdImport: Handler = async (positionals, flags) => {
   return ok({ text: result.value.text, json: result.value.json });
 };
 
-const VAULT_USAGE = `usage: dnd vault <command>
-  status                 where the vault is, and what is in it
-  set <path>             point at a vault
-  list [folder]          notes, optionally in one folder
-  search <text>          search every note
-  show <note>            print a note
-  links <note>           wikilinks a note refers to
-  import <note> [--as ID] [--dry-run]   stat block -> data/monsters/`;
+const NOT_A_PROJECT =
+  "not inside an OpenKnowledge project — run \"ok init\" in this folder or one above it";
 
-const cmdVault: Handler = async (positionals, flags) => {
+const WIKI_USAGE = `usage: dnd wiki <command>
+  status                 where the campaign is, its OpenKnowledge project, and what is in it
+  set <path>             point at the campaign folder
+  import <note> [--as ID] [--dry-run]   stat block -> data/monsters/
+
+Read and write notes through OpenKnowledge, not through dnd.`;
+
+const cmdWiki: Handler = async (positionals, flags) => {
   const sub = (positionals[0] ?? "").toLowerCase();
   const rest = positionals.slice(1);
 
   if (sub === "set") {
-    const path = rest.join(" ").trim();
-    if (path === "") return err("usage: dnd vault set <path to vault>");
-    const result = await setVault(ROOT, path);
+    const typed = rest.join(" ").trim();
+    if (typed === "") return err("usage: dnd wiki set <path to campaign folder>");
+    const result = await setWiki(ROOT, expandPath(typed, process.cwd(), homedir()));
     if (!result.ok) return result;
-    return ok({ text: `campaign vault set to ${result.value}`, json: { vault: result.value } });
+    const project = await findProject(result.value);
+    return ok({
+      text: [
+        `campaign wiki set to ${result.value}`,
+        ...(project === undefined ? [`  ${NOT_A_PROJECT}`] : []),
+      ].join("\n"),
+      json: { wiki: result.value, project: project ?? null },
+    });
   }
 
-  const vault = await resolveVault(ROOT);
-  if (!vault.ok) return vault;
+  const wiki = await resolveWiki(ROOT, process.env);
+  if (!wiki.ok) return wiki;
 
   switch (sub) {
     case "":
     case "status": {
-      const notes = await listNotes(vault.value);
+      const notes = await listNotes(wiki.value);
       if (!notes.ok) return notes;
+      const project = await findProject(wiki.value);
       const byFolder = new Map<string, number>();
       for (const n of notes.value) {
         const key = n.folder === "" ? "(root)" : n.folder.split("/")[0]!;
@@ -938,57 +947,25 @@ const cmdVault: Handler = async (positionals, flags) => {
       const rows = [...byFolder.entries()]
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([folder, count]) => `  ${String(count).padStart(3)}  ${folder}`);
+      const where = project === undefined
+        ? [NOT_A_PROJECT]
+        : [
+          `OpenKnowledge project  ${project.root}`,
+          `campaign path in it    ${project.campaign === "" ? "(project root)" : project.campaign}`,
+        ];
       return ok({
-        text: [`${vault.value}`, `${notes.value.length} notes`, ...rows].join("\n"),
-        json: { vault: vault.value, notes: notes.value.length, folders: Object.fromEntries(byFolder) },
-      });
-    }
-
-    case "list": {
-      const notes = await listNotes(vault.value);
-      if (!notes.ok) return notes;
-      const folder = rest.join(" ").trim().toLowerCase();
-      const filtered = folder === ""
-        ? notes.value
-        : notes.value.filter((n) => n.folder.toLowerCase().includes(folder));
-      if (filtered.length === 0) return err(`no notes under "${folder}"`);
-      return ok({
-        text: filtered.map((n) => `  ${n.path}`).join("\n"),
-        json: { notes: filtered },
-      });
-    }
-
-    case "search": {
-      const needle = rest.join(" ").trim();
-      const hits = await searchVault(vault.value, needle);
-      if (!hits.ok) return hits;
-      if (hits.value.length === 0) return err(`nothing in the vault matches "${needle}"`);
-      return ok({
-        text: hits.value.map((h) => `  ${h.note.title}:${h.line}  ${h.text.slice(0, 110)}`).join("\n"),
-        json: { hits: hits.value },
-      });
-    }
-
-    case "show": {
-      const note = await findNote(vault.value, rest.join(" "));
-      if (!note.ok) return note;
-      return ok({ text: note.value.content, json: { ...note.value } });
-    }
-
-    case "links": {
-      const note = await findNote(vault.value, rest.join(" "));
-      if (!note.ok) return note;
-      const links = wikilinks(note.value.content);
-      return ok({
-        text: links.length === 0
-          ? `${note.value.title} links to nothing`
-          : [`${note.value.title} links to:`, ...links.map((l) => `  ${l}`)].join("\n"),
-        json: { note: note.value.title, links },
+        text: [wiki.value, ...where, `${notes.value.length} notes`, ...rows].join("\n"),
+        json: {
+          wiki: wiki.value,
+          project: project ?? null,
+          notes: notes.value.length,
+          folders: Object.fromEntries(byFolder),
+        },
       });
     }
 
     case "import": {
-      const note = await findNote(vault.value, rest.join(" "));
+      const note = await findNote(wiki.value, rest.join(" "));
       if (!note.ok) return note;
 
       const parsed = parseStatBlock(note.value.content, note.value.title);
@@ -1027,7 +1004,7 @@ const cmdVault: Handler = async (positionals, flags) => {
     }
 
     default:
-      return err(VAULT_USAGE);
+      return err(WIKI_USAGE);
   }
 };
 
@@ -1209,7 +1186,8 @@ const COMMANDS: Record<string, Handler> = {
   rest: cmdRest,
   reaction: cmdReaction,
   gen: cmdGen,
-  vault: cmdVault,
+  wiki: cmdWiki,
+  vault: cmdWiki,
   lookup: cmdLookup,
   fetch: cmdFetch,
   import: cmdImport,

@@ -8,7 +8,7 @@
     "dnd": "bin/dnd"
   },
   "scripts": {
-    "test": "node --test 'src/**/*.test.ts'",
+    "test": "node --test \"src/**/*.test.ts\"",
     "dnd": "node src/cli/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

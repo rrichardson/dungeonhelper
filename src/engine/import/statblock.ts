@@ -19,6 +19,19 @@ import {
 } from "../types.ts";
 import { proficiencyForCr } from "./open5e.ts";
 
+/**
+ * Separate a leading YAML frontmatter block from the note body. Only `title`
+ * is read; the rest of the frontmatter is the wiki's business, and leaving it
+ * in the body would let a YAML comment pass for the `# Title` heading.
+ */
+function splitFrontmatter(note: string): { title: string | undefined; body: string } {
+  const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(note);
+  if (m === null) return { title: undefined, body: note };
+  const titleLine = /^title:[ \t]*(.+?)[ \t]*$/m.exec(m[1]!);
+  const title = titleLine?.[1]!.replace(/^(["'])(.*)\1$/, "$2").trim();
+  return { title: title === "" ? undefined : title, body: note.slice(m[0].length) };
+}
+
 /** Pull a labelled field written either as a heading or as inline bold. */
 export function field(markdown: string, label: string): string | undefined {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -224,9 +237,10 @@ export interface StatBlockImport {
 }
 
 /** Parse a wiki note into a runnable creature. */
-export function parseStatBlock(markdown: string, fallbackName?: string): Result<StatBlockImport, string> {
+export function parseStatBlock(note: string, fallbackName?: string): Result<StatBlockImport, string> {
+  const { title, body: markdown } = splitFrontmatter(note);
   const titleMatch = /^#\s+(.+)$/m.exec(markdown);
-  const name = (titleMatch?.[1] ?? fallbackName ?? "").trim();
+  const name = (title ?? titleMatch?.[1] ?? fallbackName ?? "").trim();
   if (name === "") return err("note has no title and no name was supplied");
 
   const warnings: string[] = [];

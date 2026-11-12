@@ -143,27 +143,42 @@ are reported rather than applied, since they depend on how the roll came out.
 
 ## Campaign wiki
 
-An Obsidian vault is the campaign's knowledge base, shared between the DM and
-the assistant.
+The campaign's knowledge base is an [OpenKnowledge](https://openknowledge.ai)
+project, shared live between the DM and the assistant. The assistant reads and
+writes notes through OpenKnowledge's MCP tools; `dnd` only locates the campaign
+and imports stat blocks from it.
 
 ```bash
-node src/cli/index.ts vault set ~/Documents/D&D/My\ Campaign
-node src/cli/index.ts vault search "fissure"
-node src/cli/index.ts vault import "Sporeblight Goose"
+node src/cli/index.ts wiki set "~/Projects/wiki/D&D/My Campaign"
+node src/cli/index.ts wiki status
+node src/cli/index.ts wiki import "Sporeblight Goose"
 ```
 
-`vault import` parses a Markdown stat block into a runnable creature, handling
+On Windows the same commands take a Windows path:
+
+```powershell
+node src\cli\index.ts wiki set "C:\Users\dm\wiki\D&D\My Campaign"
+```
+
+The campaign folder lives in `campaign.json` (git-ignored, since it is an
+absolute path), or `DND_WIKI` in the environment. A relative path or a leading
+`~` is resolved when it is set. `wiki status` also reports the OpenKnowledge
+project containing the campaign (the nearest folder above it with
+`.ok/config.yml`) and the campaign's path within it, which is how the
+assistant addresses notes through OpenKnowledge. If there is none, run
+`ok init` in the folder you want as the project root.
+
+`wiki import` parses a Markdown stat block into a runnable creature, handling
 both layouts wikis use — `## Armor Class` with the value beneath, and inline
-`**Armor Class** 16`. It reads the first sentence of a `*Hit:*` line as the
-damage of one hit and treats anything after it as a conditional rider to be
-applied by hand, so a "bleed on a critical" never inflates every swing. Traits,
-reactions, legendary and lair actions are reported, not invented.
+`**Armor Class** 16` — with or without YAML frontmatter, taking the name from
+the frontmatter `title` when there is one. It reads the first sentence of a
+`*Hit:*` line as the damage of one hit and treats anything after it as a
+conditional rider to be applied by hand, so a "bleed on a critical" never
+inflates every swing. Traits, reactions, legendary and lair actions are
+reported, not invented.
 
-Writing refuses to overwrite an existing note unless told to: the DM writes in
-this vault too.
-
-The active vault lives in `campaign.json` (git-ignored, since it is an absolute
-path), or `DND_VAULT` in the environment.
+Notes written for Obsidian (no frontmatter, `[[wikilinks]]`, callouts) keep
+working as they are; OpenKnowledge reads that syntax.
 
 ## Generation
 

@@ -259,6 +259,38 @@ test("a note with no title needs a name supplied", () => {
   assert.equal(parseStatBlock("no heading here").ok, false);
 });
 
+// ── Frontmatter (OpenKnowledge notes carry YAML frontmatter) ─────────────
+
+test("a frontmatter title names the creature when the note has no heading", () => {
+  const note = `---\ntitle: "Stone Ram"\ndescription: A siege beast.\ntags: [monster]\n---\n\n` +
+    inlineStyle.replace(/^# Stone Ram\n/, "");
+  const r = parseStatBlock(note, "stone-ram-file");
+  assert.ok(r.ok);
+  assert.equal(r.value.combatant.name, "Stone Ram");
+  assert.equal(r.value.combatant.ac, 16);
+});
+
+test("the frontmatter title wins over the body heading", () => {
+  const note = `---\ntitle: Cellar Hound (Elder)\n---\n${headingStyle}`;
+  const r = parseStatBlock(note);
+  assert.ok(r.ok);
+  assert.equal(r.value.combatant.name, "Cellar Hound (Elder)");
+});
+
+test("a YAML comment in frontmatter is not mistaken for the title heading", () => {
+  const note = `---\n# managed by the wiki\ndescription: no title key\n---\n${headingStyle}`;
+  const r = parseStatBlock(note);
+  assert.ok(r.ok);
+  assert.equal(r.value.combatant.name, "Cellar Hound");
+});
+
+test("frontmatter does not stop the stat block parsing as it would without it", () => {
+  const plain = parseStatBlock(headingStyle);
+  const fronted = parseStatBlock(`---\ntitle: Cellar Hound\ntags: [monster]\n---\n${headingStyle}`);
+  assert.ok(plain.ok && fronted.ok);
+  assert.deepEqual(fronted.value, plain.value);
+});
+
 // ── Field helpers ─────────────────────────────────────────────────────────
 
 test("field reads both layouts", () => {
