@@ -183,10 +183,57 @@ Do not re-derive these by hand — they are applied automatically:
 - automatic crits on paralyzed or unconscious targets within 5 feet
 - criticals doubling dice but not flat modifiers
 - resistance, immunity, vulnerability, and temp HP absorption order
+- attached homebrew: static bonuses, damage scaling, ignored resistance,
+  triggers, durations and uses (see "Homebrew effects")
 - massive-damage instant death, and death save failures from damage at 0 HP
 - concentration DC (half damage, minimum 10) rolled automatically after damage
 - exhaustion as −2 per level on all d20 tests and −5 ft speed per level
 - unconscious implying both prone and incapacitated
+
+## Homebrew effects
+
+Homebrew items, weapons and traits are defined as data in their wiki notes
+(the `effects` block; authoring is in the `dnd-campaign` skill). Once attached,
+the engine applies them itself. **Do not apply a homebrew effect by hand that
+the engine already applies**, and never adjust a number the engine produced to
+"account for" an item: if an item's block is missing or wrong, say so and fix
+the block.
+
+Getting homebrew onto combatants:
+
+    dnd equip bokun "Mantle of the Undying Wall" --attune   # party: data/party/<id>.loadout.json
+    dnd add bokun                                          # loadout read from the wiki, listed
+    dnd wiki import "Continuance Harmer"                   # a monster's effects blocks become traits
+    dnd homebrew attach harmer-1 "Continuance Harmer" --name Phased   # live, this encounter only
+    dnd homebrew show bokun                                # attached items, uses left, timed effects
+
+What happens automatically, and what you pass:
+
+- **Static numbers** (AC, saves, checks, speed, attack and damage bonuses, crit
+  range, resistances) apply on their own and are printed with the item's name.
+- **Damage pipeline**: incoming `scale` (the Continuance's Phased quarters
+  damage) and outgoing "ignore resistance" apply on their own.
+- **Source tags** are facts only the DM knows. When the DM says an attack is a
+  gravity or dimensional attack, pass `--tag unphased` on `attack`, `cast` or
+  `damage`. If the DM has not said, and the target is phased, ask.
+- **Triggers** (critical hit, reducing a creature to 0, would drop to 0) fire
+  on their own when the engine sees the event, roll any save they call for, and
+  log every change. Durations ("until the end of its next turn", N rounds)
+  expire on `dnd next`.
+- **Optional effects** (`may`) are never applied silently. The output lists
+  them as `? available: … — opt in with --effect "<name>"`. Tell the DM the
+  option exists and let them choose; then re-run with `--effect "<name>"`
+  (and `--effect-target <id>` for a spell rider that lands on one target).
+- **Features** are reference only. When one is used, spend it with
+  `dnd use <id> "<feature>"`; the engine refuses when none are left. It does
+  not adjudicate what the feature does.
+- **Uses and charges** reset with `dnd rest short|long` and at the start of
+  the holder's turn (per-round uses). Per-dawn charges regain only on
+  `dnd dawn`.
+
+Lines marked `◆` in attack and cast output are homebrew at work; read them to
+the DM when they change an outcome. Every homebrew number in the output is
+attributed to its effect by name.
 
 ## SRD reference and monsters
 
@@ -222,4 +269,6 @@ Do not read that one aloud.
 
 Say so and ask the DM how they want to rule it. Do not approximate with mental
 arithmetic. Spell effects beyond damage, movement, cover geometry, and most
-class features are not modelled yet.
+class features are not modelled yet. A homebrew rule the effects vocabulary
+cannot express belongs in a `feature` (tracked, not adjudicated): say that it
+is one when it comes up.

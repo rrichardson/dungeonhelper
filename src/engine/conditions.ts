@@ -8,6 +8,7 @@
  */
 
 import type { Ability, ConditionName, Combatant, AppliedCondition } from "./types.ts";
+import { speedBonus } from "./homebrew/active.ts";
 
 /** "within5" / "beyond5" depend on attacker distance; true applies unconditionally. */
 export type RangeQualified = boolean | "within5" | "beyond5";
@@ -162,7 +163,7 @@ export function effectiveSpeed(c: Combatant): number {
   for (const applied of conditions) {
     if (CONDITIONS[applied.condition].speedZero) return 0;
   }
-  return Math.max(0, c.speed + exhaustionSpeedPenalty(c.exhaustion));
+  return Math.max(0, c.speed + speedBonus(c).total + exhaustionSpeedPenalty(c.exhaustion));
 }
 
 /** Whether the creature can take actions at all. */

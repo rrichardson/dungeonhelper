@@ -72,7 +72,8 @@ HP · massive-damage instant death · all fourteen 2024 conditions with their
 mechanical effects, including prone by range and grappled by source · the 2024
 exhaustion ladder · saving throws and ability checks with automatic failures ·
 concentration, with the save rolled automatically after damage · death saves ·
-initiative with the 2024 surprise rules and stable tie-breaking.
+initiative with the 2024 surprise rules and stable tie-breaking · homebrew
+items, weapons, traits and effects defined as data in the wiki (see below).
 
 Not yet modelled: spell effects beyond damage, movement and geometry, most
 class features, and the merchant / settlement / wilderness generators.
@@ -179,6 +180,49 @@ reported, not invented.
 
 Notes written for Obsidian (no frontmatter, `[[wikilinks]]`, callouts) keep
 working as they are; OpenKnowledge reads that syntax.
+
+## Homebrew effects
+
+Homebrew items, weapons, armour, traits and permanent effects are written as
+data inside the wiki note that describes them, in a fenced block tagged
+`effects`. The prose is for people; the block is for the engine:
+
+````markdown
+```effects
+name: Phased
+kind: trait
+effects:
+  - on: incoming-damage
+    unless: {tag: unphased}
+    do: {scale: 1/4, round: down}
+```
+````
+
+Every definition uses a small fixed vocabulary — static modifiers, damage
+pipeline steps, triggers (critical hit, reducing a creature to 0, would drop
+to 0, casting a spell), timed conditions and grants, uses and charges, and a
+safe formula language (`level(fighter) + mod(con)`). Each word is implemented
+once in `src/engine/homebrew/` and pinned by a test, and every number an effect
+changes is printed with the effect's name. The full authoring reference is in
+the `dnd-campaign` skill; how to run it at the table is in `dnd-combat`.
+
+```bash
+node src/cli/index.ts homebrew check "Voidfang Katars"     # validate and describe a note's block
+node src/cli/index.ts equip d-jarrak "Voidfang Katars" --attune
+node src/cli/index.ts attack d-jarrak harmer-1 --weapon "voidfang katars"
+node src/cli/index.ts attack bokun harmer-1 --weapon "fungicide blade" --tag unphased
+node src/cli/index.ts cast dagant "Cone of Cold" --save con --damage 8d8:cold \
+    --targets a,b --effect "Force of the Fall" --effect-target a
+node src/cli/index.ts use d-jarrak Shadowstep               # spend a tracked use
+node src/cli/index.ts dawn                                   # per-dawn charges regain
+```
+
+Party loadouts live in `data/party/<id>.loadout.json`, separate from the D&D
+Beyond import, and are read from the wiki each time the character is added to
+an encounter. A monster note's effects blocks are attached as traits by
+`wiki import`, and a `**Tags:** fungal, continuance` line gives it creature
+tags that effects can test. `DND_PARTY_DIR` points party sheets and loadouts at
+another folder for scratch runs.
 
 ## Generation
 

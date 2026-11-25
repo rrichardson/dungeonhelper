@@ -4,3 +4,5 @@ node_modules/
 encounters/*.json
 !encounters/example-*.json
 campaign.json
+data/
+test/fixtures/homebrew

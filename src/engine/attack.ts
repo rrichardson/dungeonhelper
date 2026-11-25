@@ -11,7 +11,12 @@ import type { Rng } from "./rng.ts";
 import { type Result, ok, err } from "./result.ts";
 import { parseDice, rollParsed, doubleDice, type DiceResult } from "./dice.ts";
 import { rollD20, type D20Roll, type Modifier } from "./d20.ts";
-import { applyDamage, type DamageOutcome, type DamagePacket } from "./damage.ts";
+import { applyDamage, type DamageOutcome, type DamagePacket, type IgnoreResistance } from "./damage.ts";
+import {
+  acBonus, attackBonusFor, attackTags, creatureTags, critRangeFor, damageBonusFor, effectsFor,
+} from "./homebrew/active.ts";
+import { contextOf, substituteNames } from "./homebrew/formula.ts";
+import { fire, gate } from "./homebrew/triggers.ts";
 import { CONDITIONS, effectiveConditions, exhaustionPenalty, isIncapacitated } from "./conditions.ts";
 import { isDefeated, type Combatant, type DamageType } from "./types.ts";
 
@@ -59,6 +64,12 @@ export interface AttackRequest {
   readonly fearSourceVisible?: boolean;
   /** Resolve the attack even if the attacker is incapacitated. */
   readonly force?: boolean;
+  /** Source tags the DM attaches, e.g. "unphased" for a gravity attack. */
+  readonly tags?: readonly string[];
+  /** Names of optional ("may") homebrew effects the DM chooses to use. */
+  readonly optIn?: readonly string[];
+  /** Whose turn it is, for durations such as "until the end of its next turn". */
+  readonly turnId?: string;
 }
 
 export interface AttackAdvantage {
@@ -128,12 +139,24 @@ export interface AttackOutcome {
   readonly damageRolls: readonly { spec: DamageSpec; result: DiceResult }[];
   readonly damage: DamageOutcome | null;
   readonly notes: readonly string[];
+  /** The attacker after homebrew triggers (uses spent, temp HP gained). */
+  readonly attacker: Combatant;
+  /** The target after damage and homebrew triggers. */
+  readonly target: Combatant;
+  /** What each homebrew effect did, naming it. */
+  readonly effectNotes: readonly string[];
+  /** Optional effects that could have applied, with how to opt in. */
+  readonly available: readonly string[];
 }
 
 export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcome, string> {
   const cover = req.cover ?? "none";
-  const critRange = req.critRange ?? 20;
+  let critRange = req.critRange ?? 20;
   const notes: string[] = [];
+  const effectNotes: string[] = [];
+  const available: string[] = [];
+  const optIn = req.optIn ?? [];
+  let attacker = req.attacker;
 
   if (cover === "total") {
     return err(`${req.target.name} has total cover and cannot be targeted`);
@@ -147,9 +170,54 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
     );
   }
 
+  // Homebrew: the attacker's weapon numbers and outgoing effects, and the
+  // target's AC. Worked out before any die is rolled.
+  const tags = attackTags(req.attacker, req.weapon, req.tags ?? []);
+  const match = { tags, targetTags: creatureTags(req.target), weapon: req.weapon };
+  const atkBonus = attackBonusFor(req.attacker, req.weapon);
+  const dmgBonus = damageBonusFor(req.attacker, req.weapon);
+  const critGrant = critRangeFor(req.attacker, req.weapon);
+  if (critGrant !== null && critGrant.value < critRange) {
+    critRange = critGrant.value;
+    effectNotes.push(`${critGrant.label}: crits on ${critRange}-20`);
+  }
+
+  let damageSpecs: DamageSpec[] = [...req.damage];
+  if (dmgBonus.total !== 0 && damageSpecs.length > 0) {
+    const first = damageSpecs[0]!;
+    const sign = dmgBonus.total >= 0 ? "+" : "-";
+    damageSpecs[0] = { ...first, expression: `${first.expression}${sign}${Math.abs(dmgBonus.total)}` };
+    for (const p of dmgBonus.parts) effectNotes.push(`${p.label}: damage ${p.value >= 0 ? "+" : ""}${p.value}`);
+  }
+
+  const outgoing = effectsFor(req.attacker, "outgoing-damage", match);
+  const ignoreResistance: IgnoreResistance[] = [];
+  const pendingUses: typeof outgoing = [];
+  for (const live of outgoing) {
+    const g = gate(live, attacker, optIn);
+    // Uses are only spent on a hit; here we only learn whether it may apply.
+    if (!g.use) {
+      if (g.available) available.push(g.available);
+      if (g.note) effectNotes.push(g.note);
+      continue;
+    }
+    if (live.resource !== null) pendingUses.push(live);
+    for (const a of live.effect.actions) {
+      if (a.kind === "add-damage") {
+        const expr = substituteNames(a.expression, contextOf(req.attacker));
+        if (!expr.ok) return err(`${live.label}: ${expr.error}`);
+        damageSpecs = [...damageSpecs, { expression: expr.value, type: a.type }];
+        effectNotes.push(`${live.label}: +${expr.value} ${a.type}`);
+      }
+      if (a.kind === "ignore-resistance") {
+        ignoreResistance.push({ types: live.effect.when?.type ?? "all", label: live.label });
+      }
+    }
+  }
+
   // Parse every damage expression up front so a typo fails before any dice are rolled.
   const parsedDamage = [];
-  for (const spec of req.damage) {
+  for (const spec of damageSpecs) {
     const parsed = parseDice(spec.expression);
     if (!parsed.ok) return err(`damage "${spec.expression}": ${parsed.error}`);
     parsedDamage.push({ spec, parsed: parsed.value });
@@ -204,6 +272,7 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
   const disadvantage = [...derived.disadvantage, ...rangeDisadvantage, ...(req.disadvantage ?? [])];
 
   const modifiers: Modifier[] = [{ source: "attack bonus", value: req.attackBonus }];
+  for (const p of atkBonus.parts) modifiers.push({ source: p.label, value: p.value });
   const exhaustion = exhaustionPenalty(req.attacker.exhaustion);
   if (exhaustion !== 0) {
     modifiers.push({ source: `exhaustion ${req.attacker.exhaustion}`, value: exhaustion });
@@ -211,8 +280,11 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
 
   const roll = rollD20({ modifiers, advantage, disadvantage }, rng);
 
-  const effectiveAc = req.target.ac + COVER_AC[cover];
-  if (cover !== "none") notes.push(`${cover} cover: AC ${req.target.ac} → ${effectiveAc}`);
+  const targetAc = acBonus(req.target);
+  const baseAc = req.target.ac + targetAc.total;
+  for (const p of targetAc.parts) effectNotes.push(`${p.label}: target AC ${p.value >= 0 ? "+" : ""}${p.value}`);
+  const effectiveAc = baseAc + COVER_AC[cover];
+  if (cover !== "none") notes.push(`${cover} cover: AC ${baseAc} → ${effectiveAc}`);
   for (const note of rangeNotes) notes.push(note);
 
   // A natural 20 always hits and always crits; a natural 1 always misses.
@@ -245,7 +317,19 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
       damageRolls: [],
       damage: null,
       notes,
+      attacker,
+      target: req.target,
+      effectNotes,
+      available,
     });
+  }
+
+  for (const live of pendingUses) {
+    const g = gate(live, attacker, optIn);
+    if (g.use) {
+      attacker = g.holder;
+      if (g.note) effectNotes.push(g.note);
+    }
   }
 
   const damageRolls = parsedDamage.map(({ spec, parsed }) => ({
@@ -261,7 +345,28 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
   const damage = applyDamage(req.target, packets, {
     critical,
     source: req.attacker.name,
+    tags,
+    ignoreResistance,
+    rng,
+    ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
   });
+
+  let target = damage.combatant;
+  const fireOpts = { rng, optIn, ...(req.turnId !== undefined ? { turnId: req.turnId } : {}) };
+  if (critical) {
+    const fired = fire("critical-hit", attacker, target, match, fireOpts);
+    attacker = fired.holder;
+    target = fired.other;
+    effectNotes.push(...fired.lines);
+    available.push(...fired.available);
+  }
+  if (damage.hpBefore > 0 && damage.hpAfter === 0) {
+    const fired = fire("reduces-target-to-0", attacker, target, match, fireOpts);
+    attacker = fired.holder;
+    target = fired.other;
+    effectNotes.push(...fired.lines);
+    available.push(...fired.available);
+  }
 
   return ok({
     weapon: req.weapon,
@@ -277,5 +382,9 @@ export function resolveAttack(req: AttackRequest, rng: Rng): Result<AttackOutcom
     damageRolls,
     damage,
     notes,
+    attacker,
+    target,
+    effectNotes,
+    available,
   });
 }

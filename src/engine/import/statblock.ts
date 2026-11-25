@@ -292,6 +292,9 @@ export function parseStatBlock(note: string, fallbackName?: string): Result<Stat
 
   const hitDice = parseHitDicePool(hpText);
 
+  // **Tags:** continuance, phased — creature tags homebrew effects can test.
+  const tags = [...new Set(listItems(field(markdown, "Tags")).map((t) => t.replace(/\s+/g, "-")))];
+
   return ok({
     combatant: {
       id: slugify(name),
@@ -313,6 +316,7 @@ export function parseStatBlock(note: string, fallbackName?: string): Result<Stat
       stable: false,
       isPlayer: false,
       attacks,
+      ...(tags.length > 0 ? { tags } : {}),
       ...(hitDice !== null ? { hitDice: { size: hitDice.size, max: hitDice.max, used: 0 } } : {}),
       notes: cr !== undefined ? `CR ${cr} · imported from the campaign wiki` : "imported from the campaign wiki",
     },

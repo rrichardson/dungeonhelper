@@ -19,6 +19,8 @@ import { canApply, effectiveSpeed, isIncapacitated } from "./conditions.ts";
 import { resolveSpell, type SpellRequest, type SpellOutcome } from "./spell.ts";
 import { spendSlot, restoreSlots, shortRest, longRest, slotsOf, type SlotView, type RestOutcome } from "./resources.ts";
 import type { Ability, Combatant, ConditionName } from "./types.ts";
+import { endTurn, findResource, remaining, resetResources, spendUse, startTurn } from "./homebrew/active.ts";
+import type { RestPeriod } from "./homebrew/types.ts";
 
 export interface LogLine {
   readonly n: number;
@@ -73,6 +75,12 @@ export function getCombatant(state: EncounterState, id: string): Result<Combatan
     return err(`no combatant "${id}" in this encounter (have: ${known})`);
   }
   return ok(c);
+}
+
+/** The id of whoever is acting, as an optional field for engine requests. */
+function turnIdOf(state: EncounterState): { turnId?: string } {
+  const entry = state.started ? state.order[state.turnIndex] : undefined;
+  return entry ? { turnId: entry.id } : {};
 }
 
 function withCombatant(state: EncounterState, c: Combatant): EncounterState {
@@ -185,13 +193,26 @@ export function nextTurn(
   const round = newRound ? state.round + 1 : state.round;
   const entry = state.order[nextIndex]!;
 
-  const lines = newRound ? [`Round ${round} begins`, `${entry.name}'s turn`] : [`${entry.name}'s turn`];
+  const lines: string[] = [];
+
+  // Homebrew durations: those waiting on the end of the turn that just
+  // finished expire now; round counts tick at the start of the next.
+  const ending = state.order[state.turnIndex]!;
+  const timed: Record<string, Combatant> = {};
+  for (const [id, c] of Object.entries(state.combatants)) {
+    const ended = endTurn(c, ending.id);
+    const started = startTurn(ended.combatant, entry.id);
+    timed[id] = started.combatant;
+    lines.push(...ended.lines, ...started.lines);
+  }
+
+  lines.push(...(newRound ? [`Round ${round} begins`, `${entry.name}'s turn`] : [`${entry.name}'s turn`]));
 
   // A creature regains its reaction at the start of its own turn.
-  const acting = state.combatants[entry.id];
+  const acting = timed[entry.id];
   const combatants = acting?.reactionUsed
-    ? { ...state.combatants, [entry.id]: { ...acting, reactionUsed: false } }
-    : state.combatants;
+    ? { ...timed, [entry.id]: { ...acting, reactionUsed: false } }
+    : timed;
 
   const advanced = { ...state, turnIndex: nextIndex, round, combatants };
 
@@ -217,6 +238,10 @@ export interface AttackParams {
   readonly advantage?: readonly string[];
   readonly disadvantage?: readonly string[];
   readonly force?: boolean;
+  /** Source tags, e.g. "unphased" — see the homebrew effects language. */
+  readonly tags?: readonly string[];
+  /** Optional homebrew effects the DM opts in to, by name. */
+  readonly optIn?: readonly string[];
 }
 
 export interface AttackReport {
@@ -263,6 +288,9 @@ export function performAttack(
       advantage: params.advantage,
       disadvantage: params.disadvantage,
       force: params.force,
+      ...(params.tags !== undefined ? { tags: params.tags } : {}),
+      ...(params.optIn !== undefined ? { optIn: params.optIn } : {}),
+      ...turnIdOf(working0),
     },
     rng,
   );
@@ -272,11 +300,14 @@ export function performAttack(
   let working: EncounterState = { ...working0, rollCount };
   const lines: string[] = [];
 
+  if (params.attackerId !== params.targetId) working = withCombatant(working, outcome.attacker);
+
   if (!outcome.hit) {
     lines.push(
       `${attacker.value.name} misses ${target.value.name} with ${outcome.weapon} ` +
         `(${outcome.roll.total} vs AC ${outcome.effectiveAc})`,
     );
+    for (const note of outcome.effectNotes) lines.push(`  ${note}`);
     return ok({
       state: { ...working, log: appendLog(working, lines, seed) },
       report: { outcome, seed, concentration: null, concentrationSeed: null, concentrationBroken: false },
@@ -284,13 +315,15 @@ export function performAttack(
   }
 
   const damage = outcome.damage!;
-  working = withCombatant(working, damage.combatant);
+  working = withCombatant(working, outcome.target);
   lines.push(
     `${attacker.value.name} ${outcome.critical ? "critically hits" : "hits"} ${target.value.name} ` +
       `with ${outcome.weapon} for ${damage.adjustedTotal} damage ` +
       `(${damage.hpBefore} → ${damage.hpAfter} HP)`,
   );
+  for (const p of damage.packets) for (const h of p.homebrew ?? []) lines.push(`  ${h}`);
   for (const note of damage.notes) lines.push(`  ${note}`);
+  for (const note of outcome.effectNotes) lines.push(`  ${note}`);
   if (damage.droppedToZero && !damage.died) lines.push(`  ${target.value.name} falls unconscious at 0 HP`);
   if (damage.died) lines.push(`  ${target.value.name} dies`);
 
@@ -302,12 +335,12 @@ export function performAttack(
   if (damage.concentrationCheck) {
     const next = nextRng(working);
     concentrationSeed = next.seed;
-    concentration = concentrationSave(damage.combatant, damage.concentrationCheck.dc, next.rng);
+    concentration = concentrationSave(outcome.target, damage.concentrationCheck.dc, next.rng);
     working = { ...working, rollCount: next.rollCount };
 
     if (!concentration.success) {
       concentrationBroken = true;
-      working = withCombatant(working, { ...damage.combatant, concentration: null });
+      working = withCombatant(working, { ...outcome.target, concentration: null });
       lines.push(`  concentration on ${damage.concentrationCheck.spell} is broken (${concentration.roll?.total} vs DC ${damage.concentrationCheck.dc})`);
     } else {
       lines.push(`  concentration on ${damage.concentrationCheck.spell} holds (${concentration.roll?.total} vs DC ${damage.concentrationCheck.dc})`);
@@ -324,15 +357,16 @@ export function damageCombatant(
   state: EncounterState,
   id: string,
   packets: readonly DamagePacket[],
-  options: { critical?: boolean } = {},
+  options: { critical?: boolean; tags?: readonly string[] } = {},
 ): Result<{ state: EncounterState; outcome: ReturnType<typeof applyDamage>; concentration: CheckOutcome | null }, string> {
   const found = getCombatant(state, id);
   if (!found.ok) return found;
 
-  const outcome = applyDamage(found.value, packets, options);
+  const outcome = applyDamage(found.value, packets, { ...options, ...turnIdOf(state) });
   let working = withCombatant(state, outcome.combatant);
   const lines = [
     `${found.value.name} takes ${outcome.adjustedTotal} damage (${outcome.hpBefore} → ${outcome.hpAfter} HP)`,
+    ...outcome.packets.flatMap((p) => (p.homebrew ?? []).map((h) => `  ${h}`)),
     ...outcome.notes.map((n) => `  ${n}`),
   ];
   if (outcome.died) lines.push(`  ${found.value.name} dies`);
@@ -571,6 +605,9 @@ export interface CastParams {
   readonly slotLevel?: number;
   /** Start concentrating on this spell once it resolves. */
   readonly concentrate?: boolean;
+  readonly tags?: readonly string[];
+  readonly optIn?: readonly string[];
+  readonly effectTarget?: string;
 }
 
 export interface CastReport {
@@ -614,6 +651,11 @@ export function castSpell(
       damage: params.damage,
       onSuccess: params.onSuccess,
       targets,
+      caster: working.combatants[params.casterId]!,
+      ...(params.tags !== undefined ? { tags: params.tags } : {}),
+      ...(params.optIn !== undefined ? { optIn: params.optIn } : {}),
+      ...(params.effectTarget !== undefined ? { effectTarget: params.effectTarget } : {}),
+      ...turnIdOf(working),
     },
     rng,
   );
@@ -621,6 +663,9 @@ export function castSpell(
 
   working = { ...working, rollCount };
   const outcome = resolved.value;
+  if (outcome.caster !== null && !params.targetIds.includes(params.casterId)) {
+    working = withCombatant(working, outcome.caster);
+  }
   const lines: string[] = [
     `${caster.value.name} casts ${params.name} (DC ${params.dc} ${params.ability.toUpperCase()})` +
       (slotSpent ? ` using a level ${slotSpent} slot` : ""),
@@ -628,6 +673,7 @@ export function castSpell(
   if (outcome.damageRolls.length > 0) {
     lines.push(`  damage rolled once for the area: ${outcome.baseTotal}`);
   }
+  for (const note of outcome.effectNotes) lines.push(`  ${note}`);
 
   const concentrationChecks: { targetId: string; check: CheckOutcome; broken: boolean }[] = [];
 
@@ -646,6 +692,7 @@ export function castSpell(
         `${t.save.success ? "success" : "failure"}${t.halved ? " (half)" : ""}, ` +
         `${t.damage.adjustedTotal} damage (${t.damage.hpBefore} → ${t.damage.hpAfter} HP)`,
     );
+    for (const p of t.damage.packets) for (const h of p.homebrew ?? []) lines.push(`    ${h}`);
     for (const note of t.damage.notes) lines.push(`    ${note}`);
     if (t.damage.died) lines.push(`    ${t.targetName} dies`);
 
@@ -745,16 +792,23 @@ export function restShort(
   const rested = shortRest(found.value, diceToSpend, rng);
   if (!rested.ok) return rested;
 
-  const working = withCombatant({ ...state, rollCount }, rested.value.combatant);
+  const reset = resetResources(rested.value.combatant, "short-rest", rng);
+  if (!reset.ok) return reset;
+  const outcome: RestOutcome = {
+    ...rested.value,
+    combatant: reset.value.combatant,
+    notes: [...rested.value.notes, ...reset.value.notes],
+  };
+  const working = withCombatant({ ...state, rollCount }, outcome.combatant);
   return ok({
     state: {
       ...working,
       log: appendLog(working, [
-        `${found.value.name} takes a short rest: +${rested.value.healed} HP`,
-        ...rested.value.notes.map((n) => `  ${n}`),
+        `${found.value.name} takes a short rest: +${outcome.healed} HP`,
+        ...outcome.notes.map((n) => `  ${n}`),
       ], seed),
     },
-    outcome: rested.value,
+    outcome,
     seed,
   });
 }
@@ -769,7 +823,16 @@ export function restLong(
   for (const id of ids) {
     const found = getCombatant(working, id);
     if (!found.ok) return found;
-    const outcome = longRest(found.value);
+    const rested = longRest(found.value);
+    const { rng, rollCount } = nextRng(working);
+    working = { ...working, rollCount };
+    const reset = resetResources(rested.combatant, "long-rest", rng);
+    if (!reset.ok) return reset;
+    const outcome: RestOutcome = {
+      ...rested,
+      combatant: reset.value.combatant,
+      notes: [...rested.notes, ...reset.value.notes],
+    };
     working = withCombatant(working, outcome.combatant);
     working = {
       ...working,
@@ -781,6 +844,71 @@ export function restLong(
     outcomes.push({ id, outcome });
   }
   return ok({ state: working, outcomes });
+}
+
+/**
+ * Dawn: homebrew uses and charges that recover "per dawn" regain, rolling any
+ * dice-based regain. Nothing else about a creature changes.
+ */
+export function passDawn(
+  state: EncounterState,
+  ids: readonly string[],
+): Result<{ state: EncounterState; notes: readonly string[] }, string> {
+  return recover(state, ids, "dawn", "dawn breaks");
+}
+
+function recover(
+  state: EncounterState,
+  ids: readonly string[],
+  period: RestPeriod,
+  banner: string,
+): Result<{ state: EncounterState; notes: readonly string[] }, string> {
+  let working = state;
+  const notes: string[] = [];
+  for (const id of ids) {
+    const found = getCombatant(working, id);
+    if (!found.ok) return found;
+    const { rng, seed, rollCount } = nextRng(working);
+    const reset = resetResources(found.value, period, rng);
+    if (!reset.ok) return reset;
+    working = withCombatant({ ...working, rollCount }, reset.value.combatant);
+    const lines = [`${found.value.name}: ${banner}`, ...reset.value.notes.map((n) => `  ${n}`)];
+    if (reset.value.notes.length === 0) lines.push("  nothing to regain");
+    working = { ...working, log: appendLog(working, lines, seed) };
+    notes.push(...lines);
+  }
+  return ok({ state: working, notes });
+}
+
+/** Spend one use or charge of a homebrew effect or feature by name. */
+export function useResource(
+  state: EncounterState,
+  id: string,
+  ref: string,
+  count = 1,
+): Result<{ state: EncounterState; note: string }, string> {
+  const found = getCombatant(state, id);
+  if (!found.ok) return found;
+  const key = findResource(found.value, ref);
+  if (!key.ok) return key;
+  const spent = spendUse(found.value, key.value, count);
+  if (!spent.ok) return spent;
+  const pool = spent.value.resources![key.value]!;
+  const note = `${found.value.name} uses ${pool.label}${count > 1 ? ` ×${count}` : ""} (${remaining(pool)}/${pool.max} left)`;
+  const working = withCombatant(state, spent.value);
+  return ok({ state: { ...working, log: appendLog(working, [note], null) }, note });
+}
+
+/** Replace a combatant wholesale — for attaching or detaching homebrew mid-fight. */
+export function replaceCombatant(
+  state: EncounterState,
+  c: Combatant,
+  note: string,
+): Result<EncounterState, string> {
+  const found = getCombatant(state, c.id);
+  if (!found.ok) return found;
+  const working = withCombatant(state, c);
+  return ok({ ...working, log: appendLog(working, [note], null) });
 }
 
 export function useReaction(

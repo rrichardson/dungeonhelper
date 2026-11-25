@@ -9,6 +9,7 @@ import type { Rng } from "./rng.ts";
 import { rollD20, type D20Roll, type Modifier } from "./d20.ts";
 import { CONDITIONS, effectiveConditions, exhaustionPenalty } from "./conditions.ts";
 import { abilityModifier, type Ability, type Combatant } from "./types.ts";
+import { checkBonus, saveBonus } from "./homebrew/active.ts";
 
 export interface CheckRequest {
   readonly creature: Combatant;
@@ -57,6 +58,12 @@ function baseModifiers(
   return mods;
 }
 
+/** Homebrew bonuses to a save or check, each named after its source. */
+function homebrewModifiers(creature: Combatant, ability: Ability, kind: "save" | "check"): Modifier[] {
+  const { parts } = kind === "save" ? saveBonus(creature, ability) : checkBonus(creature, ability);
+  return parts.map((p) => ({ source: p.label, value: p.value }));
+}
+
 /** A saving throw. Proficiency is taken from the stat block unless overridden. */
 export function savingThrow(req: CheckRequest, rng: Rng): CheckOutcome {
   const { creature, ability, dc } = req;
@@ -81,7 +88,10 @@ export function savingThrow(req: CheckRequest, rng: Rng): CheckOutcome {
   }
 
   const proficient = req.proficient ?? creature.saveProficiencies.includes(ability);
-  const modifiers = baseModifiers(creature, ability, proficient, req.expertise ?? false, req.extraBonus ?? 0);
+  const modifiers = [
+    ...baseModifiers(creature, ability, proficient, req.expertise ?? false, req.extraBonus ?? 0),
+    ...homebrewModifiers(creature, ability, "save"),
+  ];
   const roll = rollD20({ modifiers, advantage, disadvantage }, rng);
 
   return {
@@ -107,9 +117,10 @@ export function abilityCheck(req: CheckRequest, rng: Rng): CheckOutcome {
     }
   }
 
-  const modifiers = baseModifiers(
-    creature, ability, req.proficient ?? false, req.expertise ?? false, req.extraBonus ?? 0,
-  );
+  const modifiers = [
+    ...baseModifiers(creature, ability, req.proficient ?? false, req.expertise ?? false, req.extraBonus ?? 0),
+    ...homebrewModifiers(creature, ability, "check"),
+  ];
   const roll = rollD20({ modifiers, advantage, disadvantage }, rng);
 
   return {

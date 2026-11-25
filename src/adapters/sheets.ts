@@ -9,6 +9,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join, basename, extname } from "node:path";
 import { type Result, ok, err } from "../engine/result.ts";
+import { parseHomebrewFields } from "../engine/homebrew/persist.ts";
 import {
   ABILITIES, DAMAGE_TYPES, CONDITION_NAMES,
   type Ability, type AppliedCondition, type Combatant, type DamageType,
@@ -256,7 +257,11 @@ export function parseCombatant(value: unknown, where: string): Result<Combatant,
     return err(`${where}: "spellcastingAbility" must be one of ${ABILITIES.join(", ")}`);
   }
 
+  const homebrew = parseHomebrewFields(value, where);
+  if (!homebrew.ok) return homebrew;
+
   return ok({
+    ...homebrew.value,
     id: id.value,
     name: name.value,
     ac: ac.value,
@@ -319,7 +324,8 @@ export async function listSheets(dir: string): Promise<Result<SheetEntry[], stri
   }
   return ok(
     names
-      .filter((n) => extname(n) === ".json")
+      // Loadouts sit beside party sheets but are not stat blocks.
+      .filter((n) => extname(n) === ".json" && !n.endsWith(".loadout.json"))
       .map((n) => ({ id: basename(n, ".json"), path: join(dir, n) }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   );

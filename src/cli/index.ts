@@ -19,8 +19,16 @@ import {
   nextTurn, currentTurn, performAttack, damageCombatant, healCombatant, grantTempHp,
   setCondition, setExhaustion, performCheck, performDeathSave, stabiliseCombatant,
   setConcentration, status, getCombatant, castSpell, performAttacks, spellSlots,
-  useSlot, regainSlots, restShort, restLong, useReaction, type EncounterState,
+  useSlot, regainSlots, restShort, restLong, useReaction, passDawn, useResource,
+  replaceCombatant, type EncounterState,
 } from "../engine/encounter.ts";
+import { parseNoteDefs } from "../engine/homebrew/note.ts";
+import { attach, detach, setAttuned } from "../engine/homebrew/equip.ts";
+import {
+  applyLoadout, definitionFromNote, loadoutPath, readLoadout, writeLoadout, type LoadoutItem,
+} from "../adapters/loadout.ts";
+import { describeDef, describeHomebrewState } from "../adapters/homebrew-format.ts";
+import type { Combatant } from "../engine/types.ts";
 import { loadEncounter, saveEncounter, encounterPath, listEncounters } from "../adapters/store.ts";
 import { findSheet, listSheets } from "../adapters/sheets.ts";
 import {
@@ -49,7 +57,9 @@ import type { InitiativeOptions } from "../engine/initiative.ts";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 const ENCOUNTER_DIR = join(ROOT, "encounters");
-const SHEET_DIRS = [join(ROOT, "data", "party"), join(ROOT, "data", "monsters")];
+// DND_PARTY_DIR points party sheets and loadouts elsewhere — for scratch runs.
+const PARTY_DIR = process.env["DND_PARTY_DIR"] ?? join(ROOT, "data", "party");
+const SHEET_DIRS = [PARTY_DIR, join(ROOT, "data", "monsters")];
 
 const HELP = `dnd — D&D 2024 rules engine
 
@@ -68,9 +78,11 @@ Resolution
          [--extra-damage EXPR:TYPE] [--distance FEET] [--threatened] [--reaction]
          [--adv REASON] [--dis REASON] [--cover half|three-quarters|total]
          [--ranged] [--crit-range N] [--times N] [--force]
+         [--tag TAG] [--effect NAME]
   cast <caster> <spell> --save ABILITY --damage EXPR:TYPE --target ID...
        [--dc N] [--on-success half|none] [--slot N] [--concentrate]
-  damage <target> <AMOUNT:TYPE>...   apply damage directly
+       [--tag TAG] [--effect NAME] [--effect-target ID]
+  damage <target> <AMOUNT:TYPE>... [--tag TAG]   apply damage directly
   heal <target> <amount>
   temphp <target> <amount>
   save <target> <ability> <dc> [--proficient] [--adv R] [--dis R]
@@ -86,10 +98,24 @@ Resources
   slots <id> [--use N] [--restore N|all]
   rest short <id> [--hit-dice N]
   rest long [ids...]                 defaults to every player character
+  dawn [ids...]                      regain per-dawn uses and charges (default: everyone)
+  use <id> <effect or feature> [--count N]   spend a homebrew use or charge
+
+Homebrew (effects blocks in wiki notes — see the dnd-campaign skill)
+  homebrew check <note>              validate a note's effects blocks and describe them
+  homebrew show <id>                 a combatant's homebrew, uses and timed effects
+  homebrew attach <id> <note> [--attune] [--name DEF]   attach live, this encounter only
+  homebrew detach <id> <name>
+  homebrew attune <id> <name> [--off]
+  equip <character> <item note> [--attune] [--as-attack NAME] [--name DEF]
+                                     add to data/party/<id>.loadout.json
+  unequip <character> <item>
+  --tag TAG        a source tag on an attack, spell or damage (e.g. unphased)
+  --effect NAME    opt in to an optional ("may") homebrew effect
 
 Campaign wiki
   wiki status | set <path>          the campaign folder in OpenKnowledge
-  wiki import <note> [--as ID] [--dry-run]
+  wiki import <note> [--as ID] [--dry-run]   stat block (+ its effects blocks as traits)
 
 SRD reference
   lookup monster|spell|condition <name>
@@ -169,6 +195,12 @@ const options = {
   distance: { type: "string" as const },
   threatened: { type: "boolean" as const },
   reaction: { type: "boolean" as const },
+  tag: { type: "string" as const, multiple: true },
+  effect: { type: "string" as const, multiple: true },
+  "effect-target": { type: "string" as const },
+  attune: { type: "boolean" as const },
+  "as-attack": { type: "string" as const },
+  name: { type: "string" as const },
   help: { type: "boolean" as const, short: "h" },
 };
 
@@ -222,6 +254,12 @@ interface Flags {
   distance?: string;
   threatened?: boolean;
   reaction?: boolean;
+  tag?: string[];
+  effect?: string[];
+  "effect-target"?: string;
+  attune?: boolean;
+  "as-attack"?: string;
+  name?: string;
   help?: boolean;
 }
 
@@ -309,8 +347,15 @@ const cmdAdd: Handler = async (positionals, flags) => {
   const ref = positionals[0];
   if (!ref) return err("usage: dnd add <sheet> [--as ID] [--count N]");
 
-  const sheet = await findSheet(ref, SHEET_DIRS);
-  if (!sheet.ok) return sheet;
+  const found = await findSheet(ref, SHEET_DIRS);
+  if (!found.ok) return found;
+
+  // A party member's loadout is read from the wiki each time, so the item
+  // notes stay the source of truth.
+  const equipped = await withLoadout(found.value);
+  if (!equipped.ok) return equipped;
+  const sheet = { ok: true as const, value: equipped.value.combatant };
+  const loadoutLines = equipped.value.lines;
 
   const countParsed = parseInteger(flags.count ?? "1", "--count");
   if (!countParsed.ok) return countParsed;
@@ -334,7 +379,10 @@ const cmdAdd: Handler = async (positionals, flags) => {
     return ok({
       state: working,
       emission: {
-        text: added.map((id) => `Added ${id} (AC ${sheet.value.ac}, ${sheet.value.hp.max} HP)`).join("\n"),
+        text: [
+          ...added.map((id) => `Added ${id} (AC ${sheet.value.ac}, ${sheet.value.hp.max} HP)`),
+          ...(loadoutLines.length > 0 ? ["  loadout:", ...loadoutLines] : []),
+        ].join("\n"),
         json: { added },
       },
     });
@@ -536,6 +584,8 @@ const cmdAttack: Handler = async (positionals, flags) => {
       advantage: flags.adv ?? [],
       disadvantage: flags.dis ?? [],
       force: flags.force ?? false,
+      tags: flags.tag ?? [],
+      optIn: flags.effect ?? [],
     }, timesParsed.value);
     if (!result.ok) return result;
 
@@ -564,7 +614,7 @@ const cmdDamage: Handler = async (positionals, flags) => {
   }
 
   return withState(flags, (state) => {
-    const result = damageCombatant(state, targetId, packets);
+    const result = damageCombatant(state, targetId, packets, { tags: flags.tag ?? [] });
     if (!result.ok) return result;
     const { outcome } = result.value;
     const lines = [
@@ -572,6 +622,7 @@ const cmdDamage: Handler = async (positionals, flags) => {
       ...outcome.packets
         .filter((p) => p.adjustment !== "normal")
         .map((p) => `  ${p.type} ${p.adjustment}: ${p.before} → ${p.after}`),
+      ...outcome.packets.flatMap((p) => (p.homebrew ?? []).map((h) => `  ◆ ${p.type}: ${h}`)),
       ...outcome.notes.map((n) => `  ! ${n}`),
     ];
     if (result.value.concentration) {
@@ -787,6 +838,9 @@ const cmdCast: Handler = async (positionals, flags) => {
       targetIds,
       ...(slotLevel !== undefined ? { slotLevel } : {}),
       ...(flags.concentrate ? { concentrate: true } : {}),
+      tags: flags.tag ?? [],
+      optIn: flags.effect ?? [],
+      ...(flags["effect-target"] !== undefined ? { effectTarget: flags["effect-target"] } : {}),
     });
     if (!result.ok) return result;
 
@@ -915,6 +969,10 @@ const cmdWiki: Handler = async (positionals, flags) => {
   const sub = (positionals[0] ?? "").toLowerCase();
   const rest = positionals.slice(1);
 
+  // Reject a mistyped command before reading the configuration, or a stale
+  // campaign.json reports itself instead of the typo.
+  if (!["", "status", "set", "import"].includes(sub)) return err(WIKI_USAGE);
+
   if (sub === "set") {
     const typed = rest.join(" ").trim();
     if (typed === "") return err("usage: dnd wiki set <path to campaign folder>");
@@ -971,7 +1029,16 @@ const cmdWiki: Handler = async (positionals, flags) => {
       const parsed = parseStatBlock(note.value.content, note.value.title);
       if (!parsed.ok) return parsed;
 
-      const combatant = flags.as ? { ...parsed.value.combatant, id: flags.as } : parsed.value.combatant;
+      const defs = parseNoteDefs(note.value.content, note.value.path);
+      if (!defs.ok) return defs;
+      let combatant: Combatant = flags.as ? { ...parsed.value.combatant, id: flags.as } : parsed.value.combatant;
+      for (const d of defs.value) {
+        const attached = attach(combatant, {
+          def: d.def, source: d.source, attuned: true, origin: "trait", note: note.value.path,
+        });
+        if (!attached.ok) return attached;
+        combatant = attached.value;
+      }
       const lines = [
         `${combatant.name}  —  AC ${combatant.ac}, ${combatant.hp.max} HP, speed ${combatant.speed}` +
           (parsed.value.challengeRating !== undefined ? `, CR ${parsed.value.challengeRating}` : ""),
@@ -981,9 +1048,17 @@ const cmdWiki: Handler = async (positionals, flags) => {
         const dmg = a.damage.map((d) => `${d.expression} ${d.type}`).join(" + ");
         lines.push(`  ${a.name}  ${a.bonus >= 0 ? "+" : ""}${a.bonus} to hit  ${dmg}`);
       }
+      if ((combatant.tags ?? []).length > 0) lines.push(`  tags: ${combatant.tags!.join(", ")}`);
+      if (defs.value.length > 0) {
+        lines.push("");
+        lines.push("  Homebrew applied by the engine (from effects blocks):");
+        for (const d of defs.value) for (const l of describeDef(d.def)) lines.push(`    ${l}`);
+      }
       if (parsed.value.warnings.length > 0) {
         lines.push("");
-        lines.push("  The engine cannot apply these — read them from the note:");
+        lines.push(defs.value.length > 0
+          ? "  The engine applies only what the effects blocks above define; anything else here is yours to apply:"
+          : "  The engine cannot apply these — read them from the note:");
         for (const w of parsed.value.warnings) lines.push(`    - ${w}`);
       }
 
@@ -1007,6 +1082,208 @@ const cmdWiki: Handler = async (positionals, flags) => {
       return err(WIKI_USAGE);
   }
 };
+
+// ── Homebrew ──────────────────────────────────────────────────────────────
+
+/** Attach a party member's loadout, if they have one. */
+async function withLoadout(c: Combatant): Promise<Result<{ combatant: Combatant; lines: string[] }, string>> {
+  const items = await readLoadout(loadoutPath(PARTY_DIR, c.id));
+  if (!items.ok) return items;
+  if (items.value.length === 0) return ok({ combatant: c, lines: [] });
+  const wiki = await resolveWiki(ROOT, process.env);
+  if (!wiki.ok) return err(`${c.name} has a loadout, but the campaign wiki is not reachable: ${wiki.error}`);
+  return applyLoadout(c, items.value, wiki.value);
+}
+
+const HOMEBREW_USAGE = `usage: dnd homebrew <command>
+  check <note>                         validate and describe a note's effects blocks
+  show <id>                            a combatant's homebrew, uses and timed effects
+  attach <id> <note> [--attune] [--name DEF]
+  detach <id> <name>
+  attune <id> <name> [--off]`;
+
+const cmdHomebrew: Handler = async (positionals, flags) => {
+  const sub = (positionals[0] ?? "").toLowerCase();
+  const rest = positionals.slice(1);
+
+  if (sub === "check") {
+    const ref = rest.join(" ").trim();
+    if (ref === "") return err("usage: dnd homebrew check <note>");
+    const wiki = await resolveWiki(ROOT, process.env);
+    if (!wiki.ok) return wiki;
+    const note = await findNote(wiki.value, ref);
+    if (!note.ok) return note;
+    const defs = parseNoteDefs(note.value.content, note.value.path);
+    if (!defs.ok) return defs;
+    if (defs.value.length === 0) return err(`${note.value.path} has no \`\`\`effects block`);
+    const lines = [`${note.value.path}: ${defs.value.length} definition${defs.value.length === 1 ? "" : "s"}, valid`];
+    for (const d of defs.value) lines.push("", ...describeDef(d.def));
+    return ok({ text: lines.join("\n"), json: { note: note.value.path, definitions: defs.value.map((d) => d.def) } });
+  }
+
+  if (sub === "show") {
+    const id = rest[0];
+    if (!id) return err("usage: dnd homebrew show <id>");
+    const state = await readState(flags);
+    if (!state.ok) return state;
+    const c = getCombatant(state.value, id);
+    if (!c.ok) return c;
+    return ok({
+      text: describeHomebrewState(c.value).join("\n"),
+      json: { homebrew: c.value.homebrew ?? [], resources: c.value.resources ?? {}, timed: c.value.timed ?? [], tags: c.value.tags ?? [] },
+    });
+  }
+
+  if (sub === "attach") {
+    const [id, ...noteParts] = rest;
+    const ref = noteParts.join(" ").trim();
+    if (!id || ref === "") return err("usage: dnd homebrew attach <id> <note> [--attune]");
+    const wiki = await resolveWiki(ROOT, process.env);
+    if (!wiki.ok) return wiki;
+    const found = await definitionFromNote(wiki.value, ref, flags.name);
+    if (!found.ok) return found;
+    return withState(flags, (state) => {
+      const c = getCombatant(state, id);
+      if (!c.ok) return c;
+      const attached = attach(c.value, {
+        ...found.value.request, attuned: flags.attune === true, origin: "attached",
+        ...(flags["as-attack"] !== undefined ? { asAttack: flags["as-attack"] } : {}),
+      });
+      if (!attached.ok) return attached;
+      const note = `${c.value.name} gains ${found.value.request.def.name} (from ${found.value.path})`;
+      const next = replaceCombatant(state, attached.value, note);
+      if (!next.ok) return next;
+      return ok({ state: next.value, emission: { text: [note, ...describeDef(found.value.request.def).map((l) => `  ${l}`)].join("\n"), json: { attached: found.value.request.def } } });
+    });
+  }
+
+  if (sub === "detach" || sub === "attune") {
+    const [id, ...nameParts] = rest;
+    const name = nameParts.join(" ").trim();
+    if (!id || name === "") return err(`usage: dnd homebrew ${sub} <id> <name>`);
+    return withState(flags, (state) => {
+      const c = getCombatant(state, id);
+      if (!c.ok) return c;
+      const changed = sub === "detach" ? detach(c.value, name) : setAttuned(c.value, name, flags.off !== true);
+      if (!changed.ok) return changed;
+      const note = sub === "detach"
+        ? `${c.value.name} loses ${name}`
+        : `${c.value.name} ${flags.off ? "ends attunement to" : "attunes to"} ${name}`;
+      const next = replaceCombatant(state, changed.value, note);
+      if (!next.ok) return next;
+      return ok({ state: next.value, emission: { text: note, json: { note } } });
+    });
+  }
+
+  return err(HOMEBREW_USAGE);
+};
+
+const cmdEquip: Handler = async (positionals, flags) => {
+  const [charId, ...noteParts] = positionals;
+  const ref = noteParts.join(" ").trim();
+  if (!charId || ref === "") return err("usage: dnd equip <character> <item note> [--attune] [--as-attack NAME]");
+
+  const sheet = await findSheet(charId, [PARTY_DIR]);
+  if (!sheet.ok) return sheet;
+  const path = loadoutPath(PARTY_DIR, sheet.value.id);
+  const items = await readLoadout(path);
+  if (!items.ok) return items;
+  const wiki = await resolveWiki(ROOT, process.env);
+  if (!wiki.ok) return wiki;
+  const found = await definitionFromNote(wiki.value, ref, flags.name);
+  if (!found.ok) return found;
+  const def = found.value.request.def;
+
+  const item: LoadoutItem = {
+    note: ref,
+    attuned: flags.attune === true,
+    ...(flags["as-attack"] !== undefined ? { asAttack: flags["as-attack"] } : {}),
+    ...(flags.name !== undefined ? { name: flags.name } : {}),
+  };
+  // Validate the whole loadout against the sheet before writing anything.
+  const existing = await applyLoadout(sheet.value, items.value, wiki.value);
+  if (!existing.ok) return existing;
+  if ((existing.value.combatant.homebrew ?? []).some((a) => a.def.id === def.id)) {
+    return err(`${sheet.value.name} already has ${def.name} in their loadout`);
+  }
+  const tried = attach(existing.value.combatant, { ...found.value.request, attuned: item.attuned, origin: "loadout", ...(item.asAttack ? { asAttack: item.asAttack } : {}) });
+  if (!tried.ok) return tried;
+
+  const written = await writeLoadout(path, [...items.value, item]);
+  if (!written.ok) return written;
+  const lines = [
+    `${sheet.value.name} equips ${def.name}${def.attunement ? (item.attuned ? " (attuned)" : " (not attuned — inactive until attuned)") : ""}`,
+    `  wrote ${path}`,
+    ...describeDef(def).map((l) => `  ${l}`),
+  ];
+
+  // Also update the live encounter, if the character is in it.
+  const state = await readState(flags);
+  if (state.ok && state.value.combatants[sheet.value.id]) {
+    const live = attach(state.value.combatants[sheet.value.id]!, { ...found.value.request, attuned: item.attuned, origin: "loadout", ...(item.asAttack ? { asAttack: item.asAttack } : {}) });
+    if (!live.ok) return err(`loadout saved, but the live encounter refused it: ${live.error}`);
+    const next = replaceCombatant(state.value, live.value, `${sheet.value.name} equips ${def.name}`);
+    if (!next.ok) return next;
+    const saved = await saveEncounter(statePath(flags), next.value);
+    if (!saved.ok) return saved;
+    lines.push(`  applied to ${sheet.value.id} in the current encounter`);
+  }
+  return ok({ text: lines.join("\n"), json: { equipped: def, loadout: path } });
+};
+
+const cmdUnequip: Handler = async (positionals, flags) => {
+  const [charId, ...nameParts] = positionals;
+  const ref = nameParts.join(" ").trim();
+  if (!charId || ref === "") return err("usage: dnd unequip <character> <item>");
+  const sheet = await findSheet(charId, [PARTY_DIR]);
+  if (!sheet.ok) return sheet;
+  const path = loadoutPath(PARTY_DIR, sheet.value.id);
+  const items = await readLoadout(path);
+  if (!items.ok) return items;
+  const wanted = ref.toLowerCase();
+  const kept = items.value.filter((i) => i.note.toLowerCase() !== wanted && (i.name ?? "").toLowerCase() !== wanted);
+  if (kept.length === items.value.length) {
+    return err(`${sheet.value.name}'s loadout has no "${ref}" (has: ${items.value.map((i) => i.note).join(", ") || "nothing"})`);
+  }
+  const written = await writeLoadout(path, kept);
+  if (!written.ok) return written;
+  const lines = [`${sheet.value.name} unequips ${ref}`, `  wrote ${path}`];
+
+  const state = await readState(flags);
+  if (state.ok && state.value.combatants[sheet.value.id]) {
+    const live = detach(state.value.combatants[sheet.value.id]!, ref);
+    if (live.ok) {
+      const next = replaceCombatant(state.value, live.value, `${sheet.value.name} unequips ${ref}`);
+      if (next.ok) {
+        const saved = await saveEncounter(statePath(flags), next.value);
+        if (!saved.ok) return saved;
+        lines.push(`  removed from ${sheet.value.id} in the current encounter`);
+      }
+    }
+  }
+  return ok({ text: lines.join("\n"), json: { unequipped: ref, loadout: path } });
+};
+
+const cmdUse: Handler = async (positionals, flags) => {
+  const [id, ...nameParts] = positionals;
+  const ref = nameParts.join(" ").trim();
+  if (!id || ref === "") return err("usage: dnd use <id> <effect or feature> [--count N]");
+  const count = parseInteger(flags.count ?? "1", "--count");
+  if (!count.ok) return count;
+  return withState(flags, (state) => {
+    const result = useResource(state, id, ref, Math.max(1, count.value));
+    if (!result.ok) return result;
+    return ok({ state: result.value.state, emission: { text: result.value.note, json: { note: result.value.note } } });
+  });
+};
+
+const cmdDawn: Handler = async (positionals, flags) =>
+  withState(flags, (state) => {
+    const ids = positionals.length > 0 ? positionals : Object.keys(state.combatants);
+    const result = passDawn(state, ids);
+    if (!result.ok) return result;
+    return ok({ state: result.value.state, emission: { text: result.value.notes.join("\n") || "nobody to wake", json: { notes: result.value.notes } } });
+  });
 
 const cmdLookup: Handler = async (positionals) => {
   const kind = (positionals[0] ?? "").toLowerCase();
@@ -1185,6 +1462,11 @@ const COMMANDS: Record<string, Handler> = {
   slots: cmdSlots,
   rest: cmdRest,
   reaction: cmdReaction,
+  homebrew: cmdHomebrew,
+  equip: cmdEquip,
+  unequip: cmdUnequip,
+  use: cmdUse,
+  dawn: cmdDawn,
   gen: cmdGen,
   wiki: cmdWiki,
   vault: cmdWiki,

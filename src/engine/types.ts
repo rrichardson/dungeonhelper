@@ -1,5 +1,7 @@
 /** Core domain types. D&D 2024 rules (SRD 5.2). */
 
+import type { Attached, ResourcePool, Timed } from "./homebrew/types.ts";
+
 export type Ability = "str" | "dex" | "con" | "int" | "wis" | "cha";
 
 export const ABILITIES: readonly Ability[] = ["str", "dex", "con", "int", "wis", "cha"];
@@ -121,6 +123,18 @@ export interface Combatant {
   /** Reactions refresh at the start of the creature's turn. */
   readonly reactionUsed?: boolean;
   readonly notes?: string;
+  /** Creature tags homebrew effects can test, e.g. "fungal", "continuance". */
+  readonly tags?: readonly string[];
+  /** Levels by lowercase class name, for formulas like level(fighter). */
+  readonly classLevels?: Readonly<Record<string, number>>;
+  /** Total character level, when known. */
+  readonly level?: number;
+  /** Homebrew definitions attached to this creature: traits, items, effects. */
+  readonly homebrew?: readonly Attached[];
+  /** Uses and charges of homebrew effects and features, keyed "<def>/<name>". */
+  readonly resources?: Readonly<Record<string, ResourcePool>>;
+  /** Temporary grants and timed conditions from homebrew triggers. */
+  readonly timed?: readonly Timed[];
 }
 
 /** Ability modifier: floor((score - 10) / 2). Handles odd and sub-10 scores. */

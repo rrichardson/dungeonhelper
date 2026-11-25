@@ -8,6 +8,7 @@ import type { CheckOutcome } from "../engine/checks.ts";
 import type { DeathSaveOutcome } from "../engine/death.ts";
 import type { InitiativeEntry } from "../engine/initiative.ts";
 import type { Combatant } from "../engine/types.ts";
+import { acBonus } from "../engine/homebrew/active.ts";
 
 /** "1d6[3] +2 = 5" — every die visible so the arithmetic can be checked. */
 export function describeDice(result: DiceResult): string {
@@ -55,6 +56,8 @@ export function formatAttack(report: AttackReport, state: EncounterState): strin
 
   for (const note of o.notes) lines.push(`  ${note}`);
 
+  if (!o.hit) for (const note of o.effectNotes) lines.push(`  ◆ ${note}`);
+
   if (o.hit && o.damage) {
     for (const { spec, result } of o.damageRolls) {
       lines.push(`  dmg: ${describeDice(result)} ${spec.type}`);
@@ -63,12 +66,14 @@ export function formatAttack(report: AttackReport, state: EncounterState): strin
       if (p.adjustment !== "normal") {
         lines.push(`  ${p.type} ${p.adjustment}: ${p.before} → ${p.after}`);
       }
+      for (const h of p.homebrew ?? []) lines.push(`  ◆ ${p.type}: ${h}`);
     }
     if (o.damage.tempAbsorbed > 0) lines.push(`  ${o.damage.tempAbsorbed} absorbed by temp HP`);
     lines.push(`  ${targetName}: ${o.damage.hpBefore} → ${o.damage.hpAfter} HP (−${o.damage.adjustedTotal})`);
     for (const note of o.damage.notes) lines.push(`  ! ${note}`);
     if (o.damage.droppedToZero && !o.damage.died) lines.push(`  ! ${targetName} drops to 0 and is unconscious`);
     if (o.damage.died) lines.push(`  ! ${targetName} dies`);
+    for (const note of o.effectNotes) lines.push(`  ◆ ${note}`);
   }
 
   if (report.concentration) {
@@ -78,6 +83,7 @@ export function formatAttack(report: AttackReport, state: EncounterState): strin
     );
   }
 
+  for (const a of o.available) lines.push(`  ? available: ${a}`);
   lines.push(`  (seed ${report.seed})`);
   return lines.join("\n");
 }
@@ -136,7 +142,7 @@ export function formatStatus(rows: readonly CombatantStatus[], state: EncounterS
         ? ` [${"●".repeat(c.deathSaves.successes)}${"○".repeat(3 - c.deathSaves.successes)}/${"✕".repeat(c.deathSaves.failures)}${"○".repeat(3 - c.deathSaves.failures)}]`
         : "";
     return (
-      `${marker} ${init}  ${c.name.padEnd(nameWidth)}  AC ${String(c.ac).padStart(2)}  ` +
+      `${marker} ${init}  ${c.name.padEnd(nameWidth)}  AC ${String(c.ac + acBonus(c).total).padStart(2)}  ` +
       `${hpBar(c).padEnd(hpWidth)}  spd ${String(r.speed).padStart(2)}  ${conditionList(c)}` +
       `${state_ ? `  ${state_}` : ""}${saves}`
     );
@@ -171,6 +177,10 @@ export function formatCast(report: CastReport, casterName: string): string {
   for (const { spec, result } of o.damageRolls) {
     lines.push(`  ${describeDice(result)} ${spec.type} — rolled once for the area`);
   }
+  for (const r of o.riderRolls) {
+    lines.push(`  ◆ ${r.label}: ${describeDice(r.result)} ${r.spec.type} — for ${r.targetId} only`);
+  }
+  for (const note of o.effectNotes) lines.push(`  ◆ ${note}`);
 
   for (const t of o.targets) {
     const rolled = t.save.autoFailed
@@ -191,6 +201,7 @@ export function formatCast(report: CastReport, casterName: string): string {
     );
     for (const p of t.damage.packets) {
       if (p.adjustment !== "normal") lines.push(`    ${p.type} ${p.adjustment}: ${p.before} → ${p.after}`);
+      for (const h of p.homebrew ?? []) lines.push(`    ◆ ${p.type}: ${h}`);
     }
     for (const note of t.damage.notes) lines.push(`    ! ${note}`);
     if (t.damage.died) lines.push(`    ! ${t.targetName} dies`);
@@ -200,6 +211,7 @@ export function formatCast(report: CastReport, casterName: string): string {
     lines.push(`  concentration (${c.targetId}): ${c.broken ? "BROKEN" : "holds"}`);
   }
 
+  for (const a of o.available) lines.push(`  ? available: ${a}`);
   lines.push(`  (seed ${report.seed})`);
   return lines.join("\n");
 }
